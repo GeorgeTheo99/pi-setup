@@ -56,9 +56,14 @@ else
 fi
 
 # --- overlays ----------------------------------------------------------------
-for overlay_doctor in "$CODE_ROOT"/pi-setup-*/bin/doctor; do
+# An overlay is any repo under CODE_ROOT with a manifest.fragment.yaml; run
+# its bin/doctor if present.
+for fragment in "$CODE_ROOT"/*/manifest.fragment.yaml; do
+  [ -f "$fragment" ] || continue
+  overlay_dir="$(dirname "$fragment")"
+  overlay_doctor="$overlay_dir/bin/doctor"
   [ -x "$overlay_doctor" ] || continue
-  echo "overlay: $(basename "$(dirname "$(dirname "$overlay_doctor")")")"
+  echo "overlay: $(basename "$overlay_dir")"
   "$overlay_doctor" || FAIL=1
 done
 
