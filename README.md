@@ -70,3 +70,19 @@ repo. An overlay is a directory or repo containing:
 ## License
 
 Apache-2.0
+
+## Secret scanning
+
+Secret scanning is enforced in three layers: tracked pre-commit/pre-push hooks,
+the local bare repository's pre-receive hook, and the pinned GitHub Gitleaks
+workflow. Install Gitleaks and activate the tracked worktree hooks once per
+clone:
+
+```bash
+brew install gitleaks
+git config core.hooksPath .githooks
+```
+
+Do not bypass a failed scan. `.gitleaksignore` contains only exact fingerprints
+for synthetic test credentials; never allowlist an entire file or credential
+pattern.
