@@ -1,0 +1,50 @@
+# pi-setup module manifest
+#
+# Each module is an independent git repo with its own ./install.sh.
+# pi-setup clones/updates them under ~/local_code and runs their installers.
+#
+# tier:
+#   required    — installed always
+#   recommended — installed unless --minimal
+#   optional    — installed only with --with-<name>
+#
+# ref: branch, tag, or SHA to check out. Pin tags/SHAs for reproducible
+# installs; "main" tracks latest.
+
+version: 1
+
+modules:
+  pi-shared:
+    repo: https://github.com/GeorgeTheo99/pi-shared.git
+    ref: main
+    tier: required
+    description: >-
+      Shared Pi coding-agent resources: extensions (memory, subagents,
+      browser automation, deep research, work plans, tool bundles), skills,
+      prompts, themes, and workflows. Registers itself as a Pi package.
+
+  model-gateway:
+    repo: https://github.com/GeorgeTheo99/model-gateway.git
+    ref: main
+    tier: recommended
+    description: >-
+      Self-hosted model router on 127.0.0.1:9111 — one local endpoint for
+      cloud providers (bring your own keys) and local oMLX MLX models,
+      speaking OpenAI Chat/Responses and Anthropic protocols. Skip it
+      (--minimal) if you configure Pi providers directly.
+    post_install_note: >-
+      Provision a model-info.json catalog and provider keys in
+      config/config.yaml before models become available. See
+      docs/deployment.md in the module.
+
+  local_web_search:
+    repo: https://github.com/GeorgeTheo99/local_web_search.git
+    ref: main
+    tier: optional
+    description: >-
+      Loopback-only web search + page retrieval broker on 127.0.0.1:8889
+      (FastMCP + Brave Search). Powers pi-shared's web_search / web_fetch /
+      deep_research tools. Requires a personal Brave Search API key.
+    post_install_note: >-
+      Set your Brave key: either BRAVE_API_KEY in the service environment or
+      the mode-0600 secret file the broker documents (see module README).
