@@ -12,8 +12,14 @@
 # optional setup.d/ of executable hooks run after module installs. Overlays
 # extend the module list; they never replace installer logic.
 #
-# Prerequisites: macOS, git, curl. Module installers may additionally require
-# Homebrew, uv, python3, and Node (they check for themselves).
+# Prerequisites: macOS, git, curl, python3, and the Pi CLI (`pi`) on PATH.
+# Module installers may additionally require Homebrew, uv, and Node (they
+# check for themselves and fail loudly when missing).
+#
+# Exit status: 0 only when every required module/hook succeeded AND the final
+# doctor passes. Otherwise non-zero with the failing check(s) printed. The
+# generated model launchers (`pi-list`, `pi-sonnet`, ...) are sourced from
+# ~/.zshrc via a marked block; set PI_SETUP_NO_SHELL_RC=1 to opt out.
 set -euo pipefail
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -43,6 +49,7 @@ die()  { printf '\033[1;31m[pi-setup]\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v git >/dev/null || die "git is required"
 command -v python3 >/dev/null || die "python3 is required (used to parse manifest.yaml)"
+command -v pi >/dev/null || die "the Pi CLI is not on PATH — install Pi first (see README prerequisites), then re-run"
 
 # ---------------------------------------------------------------------------
 # Manifest parsing (python3 stdlib only — no yaml dependency for the installer)
@@ -152,6 +159,35 @@ run_overlay() {
 }
 
 # ---------------------------------------------------------------------------
+# Shell integration: source generated launchers (pi-list, pi-sonnet, ...)
+# ---------------------------------------------------------------------------
+LAUNCHERS="$HOME/.pi/generated/pi-launchers.zsh"
+RC_BEGIN="# >>> pi-setup generated launchers >>>"
+RC_END="# <<< pi-setup generated launchers <<<"
+
+install_shell_rc() {
+  [ "${PI_SETUP_NO_SHELL_RC:-0}" = "1" ] && { log "Skipping ~/.zshrc integration (PI_SETUP_NO_SHELL_RC=1)"; return 0; }
+  local rc="${PI_SETUP_ZSHRC:-$HOME/.zshrc}"
+  if [ -f "$rc" ] && grep -qF "$RC_BEGIN" "$rc"; then
+    log "~/.zshrc already sources generated launchers"
+    return 0
+  fi
+  if [ -f "$rc" ] && grep -qF 'pi-launchers.zsh' "$rc"; then
+    log "~/.zshrc already references pi-launchers.zsh (unmanaged line); leaving it"
+    return 0
+  fi
+  if [ -f "$rc" ]; then
+    cp -p "$rc" "$rc.bak-$(date +%Y%m%d-%H%M%S)"
+  fi
+  {
+    [ -f "$rc" ] && [ -s "$rc" ] && [ "$(tail -c1 "$rc" | od -An -c | tr -d ' ')" != '\n' ] && echo
+    printf '%s\n[ -f "$HOME/.pi/generated/pi-launchers.zsh" ] && source "$HOME/.pi/generated/pi-launchers.zsh"\n%s\n' \
+      "$RC_BEGIN" "$RC_END"
+  } >> "$rc"
+  log "Added generated-launcher block to $rc"
+}
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 mkdir -p "$CODE_ROOT"
@@ -170,7 +206,16 @@ for o in "${OVERLAYS[@]:-}"; do
   [ -n "$o" ] && run_overlay "$o"
 done
 
-log "Running doctor..."
-"$SETUP_DIR/bin/doctor" || warn "doctor reported issues (see above)"
+install_shell_rc
 
-log "Done. Start a new shell, then run: pi"
+log "Running doctor..."
+if ! "$SETUP_DIR/bin/doctor"; then
+  die "install did not complete: fix the FAIL items above (each names its repair command), then re-run ./install.sh"
+fi
+
+if [ -s "$LAUNCHERS" ]; then
+  log "Install complete. Start a new shell, run \`pi-list\` to see your models, then launch one, e.g. \`pi-sonnet\`."
+  log "(Bare \`pi\` starts the default profile without the generated Databricks model catalog.)"
+else
+  log "Install complete. Start a new shell, then run: pi"
+fi

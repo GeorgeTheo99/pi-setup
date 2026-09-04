@@ -18,7 +18,9 @@ just clones, pins, installs, and health-checks them.
 - macOS with [Homebrew](https://brew.sh)
 - `git`, `curl`, `python3`
 - [uv](https://docs.astral.sh/uv) (`brew install uv`) — used by the service modules
-- Pi itself: `npm install -g @mariozechner/pi-coding-agent` (or see the Pi docs)
+- Node.js / `npm` (`brew install node`) — Pi extensions have locked npm dependencies
+- **Pi itself, installed first**: `npm install -g @mariozechner/pi-coding-agent`
+  (or see the Pi docs). `install.sh` refuses to start until `pi` is on `PATH`.
 
 ## Install
 
@@ -39,11 +41,39 @@ Post-install (module-specific):
 - **local_web_search** needs your Brave Search API key (env var or secret
   file — see its README).
 
+## What "done" means
+
+`install.sh` exits `0` **only** when every required module and overlay hook
+succeeded *and* the final doctor passes. Any required failure exits non-zero
+with the failing check and its repair command — the installer never prints a
+success banner over a broken environment.
+
+On success it also adds one marked block to `~/.zshrc` that sources the
+generated launchers (`~/.pi/generated/pi-launchers.zsh`), so a **new shell**
+has `pi-list` and the `pi-<alias>` commands (e.g. `pi-sonnet`). Re-running never
+duplicates the block; set `PI_SETUP_NO_SHELL_RC=1` to opt out and source it
+yourself. Bare `pi` starts the default profile without the generated catalog.
+
 ## Health check
 
 ```bash
-bin/doctor
+bin/doctor                        # read-only, no model calls
+bin/doctor --smoke-model sonnet   # + one real no-tools completion via pi-sonnet
 ```
+
+The doctor verifies: `pi` on PATH, `pi-shared` registered and its extension
+dependencies resolvable, Pi starts without extension-load errors, services
+respond, the generated launchers parse and `pi-list` resolves in a fresh zsh,
+plus each overlay's own `bin/doctor`.
+
+### Recovery
+
+| Symptom | Fix |
+|---|---|
+| `Cannot find module 'yaml'` / `'patchright'` on `pi` start | `~/local_code/pi-shared/install.sh` (runs locked `npm ci` per extension) |
+| duplicate `enterprise_*` tool errors | overlay wiring hook, e.g. `~/local_code/pi-databricks/setup.d/30-pi-wiring.sh` |
+| `pi-list: command not found` | re-run `./install.sh` (adds the `~/.zshrc` block), then open a new shell |
+| doctor: "model catalog empty" / "workspace not activated" | re-run the overlay's model hook (it prints the exact `model-gateway workspace replace …` command) |
 
 ## Overlays
 
