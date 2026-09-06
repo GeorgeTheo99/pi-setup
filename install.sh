@@ -172,12 +172,20 @@ install_shell_rc() {
     log "~/.zshrc already sources generated launchers"
     return 0
   fi
-  if [ -f "$rc" ] && grep -qF 'pi-launchers.zsh' "$rc"; then
+  if [ -f "$rc" ] && python3 - "$rc" <<'PY'
+import sys
+from pathlib import Path
+lines = Path(sys.argv[1]).read_text().splitlines()
+sys.exit(0 if any('pi-launchers.zsh' in line and not line.lstrip().startswith('#')
+                  and ('source ' in line or '. ' in line) for line in lines) else 1)
+PY
+  then
     log "~/.zshrc already references pi-launchers.zsh (unmanaged line); leaving it"
     return 0
   fi
   if [ -f "$rc" ]; then
-    cp -p "$rc" "$rc.bak-$(date +%Y%m%d-%H%M%S)"
+    local backup="$rc.bak-$(date +%Y%m%d-%H%M%S)-$$"
+    (umask 077; cp "$rc" "$backup"; chmod 600 "$backup")
   fi
   {
     [ -f "$rc" ] && [ -s "$rc" ] && [ "$(tail -c1 "$rc" | od -An -c | tr -d ' ')" != '\n' ] && echo

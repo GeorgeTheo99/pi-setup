@@ -1,136 +1,148 @@
-#!/usr/bin/env bash
-# pi-setup doctor — health checks for the composed Pi environment.
-# Exits 0 if all installed components are healthy; non-zero otherwise.
-#
-# Read-only and free of billable model calls by default. Every FAIL line
-# names its repair. Options:
-#   --smoke-model <alias>   additionally run one real no-tools completion
-#                           through the generated `pi-<alias>` launcher
-set -uo pipefail
+#!/usr/bin/env python3
+"""Check installation readiness without shell startup, repair, or model calls.
 
-CODE_ROOT="${PI_SETUP_CODE_ROOT:-$HOME/local_code}"
-FAIL=0
-SMOKE_MODEL=""
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --smoke-model) shift; SMOKE_MODEL="${1:?--smoke-model requires an alias}" ;;
-    -h|--help) sed -n '2,9p' "$0"; exit 0 ;;
-    *) echo "unknown flag: $1" >&2; exit 2 ;;
-  esac
-  shift
-done
+Extension registration code executes through Pi's SDK (just as at startup).
+Optional --smoke-model ALIAS explicitly opts into one billable completion.
+"""
+from __future__ import annotations
 
-ok()   { printf '  \033[1;32mOK\033[0m    %s\n' "$*"; }
-bad()  { printf '  \033[1;31mFAIL\033[0m  %s\n' "$*"; FAIL=1; }
-skip() { printf '  \033[1;33mskip\033[0m  %s\n' "$*"; }
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import urllib.error
+import urllib.request
 
-echo "pi-setup doctor"
 
-# --- pi CLI -----------------------------------------------------------------
-if command -v pi >/dev/null; then
-  ok "pi CLI on PATH ($(pi --version 2>/dev/null | head -1 || echo version unknown))"
-else
-  bad "pi CLI not on PATH — install Pi first (see README prerequisites)"
-fi
+class Doctor:
+    def __init__(self):
+        self.failed = False
 
-# --- pi-shared --------------------------------------------------------------
-if [ -d "$CODE_ROOT/pi-shared" ]; then
-  ok "pi-shared cloned"
-  SETTINGS="$HOME/.pi/agent/settings.json"
-  if [ -f "$SETTINGS" ] && grep -q "pi-shared" "$SETTINGS" 2>/dev/null; then
-    ok "pi-shared registered in ~/.pi/agent/settings.json"
-  else
-    bad "pi-shared not registered as a Pi package in $SETTINGS (run: $CODE_ROOT/pi-shared/install.sh)"
-  fi
-  CHECK="$CODE_ROOT/pi-shared/bin/pi-shared-check-deps"
-  if [ -x "$CHECK" ]; then
-    if out="$("$CHECK" 2>&1)"; then
-      ok "pi-shared extension dependencies resolve (yaml, patchright, playwright)"
-    else
-      bad "pi-shared extension dependencies missing — Pi will fail to start (run: $CODE_ROOT/pi-shared/install.sh):"
-      printf '%s\n' "$out" | grep FAIL | sed 's/^/        /'
-    fi
-  else
-    bad "pi-shared is outdated (no bin/pi-shared-check-deps); run: git -C $CODE_ROOT/pi-shared pull && $CODE_ROOT/pi-shared/install.sh"
-  fi
-else
-  bad "pi-shared missing under $CODE_ROOT"
-fi
+    def ok(self, message):
+        print(f"  OK    {message}")
 
-# --- Pi extension load probe ------------------------------------------------
-# Pi imports every registered extension at startup; a dependency or duplicate
-# tool problem surfaces as a diagnostic even when the command exits 0.
-if command -v pi >/dev/null; then
-  probe="$(cd "$HOME" && timeout 60 pi --list-models 2>&1 </dev/null || true)"
-  if printf '%s' "$probe" | grep -qiE "Failed to load extension|Cannot find module|already registered|duplicate tool"; then
-    bad "Pi reports extension load errors:"
-    printf '%s\n' "$probe" | grep -iE "Failed to load extension|Cannot find module|already registered|duplicate tool" | head -5 | sed 's/^/        /'
-  else
-    ok "Pi loads all registered extensions without errors"
-  fi
-fi
+    def bad(self, message):
+        self.failed = True
+        print(f"  FAIL  {message}")
 
-# --- model-gateway ----------------------------------------------------------
-if [ -d "$CODE_ROOT/model-gateway" ]; then
-  if curl -sf -m 3 http://127.0.0.1:9111/health >/dev/null 2>&1; then
-    ok "model-gateway healthy on :9111"
-  else
-    bad "model-gateway cloned but not responding on :9111 (run: model-gateway status)"
-  fi
-else
-  skip "model-gateway not installed (optional with --minimal)"
-fi
+    def warn(self, message):
+        print(f"  WARN  {message}")
 
-# --- local_web_search --------------------------------------------------------
-if [ -d "$CODE_ROOT/local_web_search" ]; then
-  if curl -sf -m 3 -o /dev/null http://127.0.0.1:8889/mcp 2>/dev/null || \
-     curl -s -m 3 -o /dev/null -w '%{http_code}' http://127.0.0.1:8889/mcp 2>/dev/null | grep -qE '^(200|405|406)'; then
-    ok "local_web_search broker responding on :8889"
-  else
-    bad "local_web_search cloned but broker not responding on :8889"
-  fi
-else
-  skip "local_web_search not installed (enable with --with-local_web_search)"
-fi
+    def command(self, argv, *, timeout=90, optional=False, required_line=None):
+        try:
+            process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=True)
+            try:
+                out, err = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.bad(f"Cannot complete {shlex.join(map(str, argv))}: {exc}")
+            return False
+        text = (out + err).strip()
+        if optional and process.returncode == 2:
+            self.warn(text or f"Optional capability unavailable: {argv[0]}")
+            return False
+        if process.returncode != 0:
+            self.bad(f"Check exited {process.returncode}: {shlex.join(map(str, argv))}")
+            if text:
+                print(text[-6000:])
+            return False
+        if required_line is not None and required_line not in [line.strip() for line in out.splitlines()]:
+            self.bad(f"Command completed but did not return the expected response {required_line!r}")
+            return False
+        if text:
+            print(text[-6000:])
+        return True
 
-# --- generated launchers ----------------------------------------------------
-LAUNCHERS="$HOME/.pi/generated/pi-launchers.zsh"
-if [ -d "$CODE_ROOT/model-gateway" ]; then
-  if [ -s "$LAUNCHERS" ]; then
-    if zsh -n "$LAUNCHERS" 2>/dev/null; then
-      ok "generated launchers parse ($LAUNCHERS)"
-    else
-      bad "generated launchers have a syntax error: $LAUNCHERS (regenerate: pi-regen)"
-    fi
-    if zsh -ic 'whence -w pi-list' 2>/dev/null | grep -q function; then
-      ok "pi-list resolves in a new zsh session"
-    else
-      bad "pi-list not found in a new zsh — ~/.zshrc must source $LAUNCHERS (re-run install.sh, or add: [ -f \"$LAUNCHERS\" ] && source \"$LAUNCHERS\")"
-    fi
-  else
-    bad "no generated launchers at $LAUNCHERS — model catalog not activated (see overlay doctor below)"
-  fi
-fi
 
-# --- overlays ----------------------------------------------------------------
-# An overlay is any repo under CODE_ROOT with a manifest.fragment.yaml; run
-# its bin/doctor if present.
-for fragment in "$CODE_ROOT"/*/manifest.fragment.yaml; do
-  [ -f "$fragment" ] || continue
-  overlay_dir="$(dirname "$fragment")"
-  overlay_doctor="$overlay_dir/bin/doctor"
-  [ -x "$overlay_doctor" ] || continue
-  echo "overlay: $(basename "$overlay_dir")"
-  "$overlay_doctor" || FAIL=1
-done
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--smoke-model", metavar="ALIAS")
+    args = parser.parse_args()
+    home = Path.home()
+    root = Path(os.environ.get("PI_SETUP_CODE_ROOT", home / "local_code")).resolve()
+    shared = root / "pi-shared"
+    doctor = Doctor()
+    print("pi-setup doctor")
+    if not shutil.which("pi"):
+        doctor.bad("Pi CLI is not on PATH. Install Pi first; see pi-setup README prerequisites.")
+    else:
+        doctor.command(["pi", "--version"], timeout=15)
+    checker = shared / "bin/pi-shared-check-deps"
+    probe = shared / "bin/pi-profile-check"
+    if not checker.is_file() or not probe.is_file():
+        doctor.bad(f"Missing pi-shared health helpers. Repair: {shared / 'install.sh'}")
+    else:
+        doctor.command([str(checker)])
+        doctor.command([str(probe), "--agent-dir", str(home / ".pi/agent"), "--expect-package", str(shared)])
 
-# --- optional real completion -------------------------------------------------
-if [ -n "$SMOKE_MODEL" ]; then
-  if zsh -ic "pi-$SMOKE_MODEL --no-tools -p 'Reply with exactly PI_OK' 2>/dev/null" </dev/null | grep -q PI_OK; then
-    ok "pi-$SMOKE_MODEL answered a real no-tools completion"
-  else
-    bad "pi-$SMOKE_MODEL did not answer (run it interactively to see the error)"
-  fi
-fi
+    gateway = root / "model-gateway"
+    launchers = home / ".pi/generated/pi-launchers.zsh"
+    if gateway.is_dir():
+        try:
+            with urllib.request.urlopen("http://127.0.0.1:9111/health", timeout=3) as response:
+                health = json.loads(response.read(65536))
+            if health.get("status") != "ok" or health.get("service") != "model-gateway":
+                raise ValueError("response is not a healthy model-gateway")
+            doctor.ok("model-gateway /health identifies the expected service")
+        except (OSError, ValueError) as exc:
+            doctor.bad(f"model-gateway health failed: {exc}. Repair: {gateway / 'bin/model-gateway'} restart")
+        if not launchers.is_file():
+            doctor.bad(f"Missing launchers: {launchers}. Repair: rerun the overlay catalog hook.")
+        elif not shutil.which("zsh"):
+            doctor.bad("zsh is required for the generated model launchers")
+        else:
+            doctor.command(["zsh", "-n", str(launchers)], timeout=10)
+            if os.environ.get("PI_SETUP_NO_SHELL_RC") == "1":
+                doctor.warn(f"Shell integration opted out; source {launchers} before using model launchers")
+            else:
+                rc = Path(os.environ.get("PI_SETUP_ZSHRC", home / ".zshrc"))
+                lines = rc.read_text().splitlines() if rc.is_file() else []
+                if not any(not line.lstrip().startswith("#") and "pi-launchers.zsh" in line for line in lines):
+                    doctor.bad(f"No launcher hook in {rc}. Repair: rerun pi-setup/install.sh")
+                else:
+                    doctor.ok("Launcher syntax and shell hook configured (shell startup not executed)")
+        if probe.is_file():
+            argv = [str(probe), "--agent-dir", str(home / ".pi-omlx/agent"),
+                    "--expect-package", str(shared), "--require-models"]
+            overlay = root / "pi-databricks"
+            if overlay.is_dir():
+                argv += ["--expect-package", str(overlay)]
+            doctor.command(argv)
+    else:
+        doctor.warn("model-gateway not installed; generated model launchers are not configured")
 
-exit "$FAIL"
+    browser = shared / "bin/pi-browser-check"
+    if browser.is_file():
+        doctor.command([sys.executable, str(browser)], timeout=10, optional=True)
+    else:
+        doctor.warn("Browser readiness helper missing; public browser capability has not been verified")
+
+    for manifest in sorted(root.glob("*/manifest.fragment.yaml")):
+        check = manifest.parent / "bin/doctor"
+        if check.is_file():
+            print(f"overlay: {manifest.parent.name}")
+            doctor.command([str(check)], timeout=120)
+
+    if args.smoke_model:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", args.smoke_model):
+            doctor.bad("--smoke-model must be a launcher alias (letters, numbers, _ or -)")
+        elif not launchers.is_file():
+            doctor.bad("Cannot smoke a model before launchers are installed")
+        else:
+            doctor.command(["zsh", "-f", "-c", 'source "$1"; "$2" --no-tools -p "Reply with exactly PI_OK"',
+                            "doctor", str(launchers), f"pi-{args.smoke_model}"], timeout=180, required_line="PI_OK")
+    return int(doctor.failed)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -57,14 +57,27 @@ yourself. Bare `pi` starts the default profile without the generated catalog.
 ## Health check
 
 ```bash
-bin/doctor                        # read-only, no model calls
+bin/doctor                        # no model calls, shell startup, or repair
 bin/doctor --smoke-model sonnet   # + one real no-tools completion via pi-sonnet
 ```
 
-The doctor verifies: `pi` on PATH, `pi-shared` registered and its extension
-dependencies resolvable, Pi starts without extension-load errors, services
-respond, the generated launchers parse and `pi-list` resolves in a fresh zsh,
-plus each overlay's own `bin/doctor`.
+The doctor checks the Pi version, dependency resolution, and both the default
+and generated model profiles through the **installed Pi SDK resource loader**.
+It inspects collected extension errors directly; `pi --list-models` is not an
+extension-readiness test. Timeouts, missing verification reports, and nonzero
+exits fail the check. The generated profile must contain models and load its
+required packages, independent of `~/.local/bin` being on `PATH`.
+
+It also checks service identity, launcher syntax and shell-hook configuration,
+and each overlay's doctor. It does not execute `.zshrc`, run profile repair, or
+claim to have tested a fresh interactive shell. Third-party extension registration
+code does execute, as it does at normal Pi startup. `--smoke-model` explicitly
+opts into an end-to-end completion and requires a standalone `PI_OK` response.
+
+Public browser tools are optional: a separately managed browser-worker and its
+authentication token must pass `pi-shared/bin/pi-browser-check`. Missing readiness
+is reported as **WARN / unavailable**, not silently counted as success. The
+Databricks search shim uses port `8891`; browser-worker defaults to `8890`.
 
 ### Recovery
 
@@ -73,7 +86,9 @@ plus each overlay's own `bin/doctor`.
 | `Cannot find module 'yaml'` / `'patchright'` on `pi` start | `~/local_code/pi-shared/install.sh` (runs locked `npm ci` per extension) |
 | duplicate `enterprise_*` tool errors | overlay wiring hook, e.g. `~/local_code/pi-databricks/setup.d/30-pi-wiring.sh` |
 | `pi-list: command not found` | re-run `./install.sh` (adds the `~/.zshrc` block), then open a new shell |
-| doctor: "model catalog empty" / "workspace not activated" | re-run the overlay's model hook (it prints the exact `model-gateway workspace replace …` command) |
+| doctor: model catalog/profile missing | Re-run the overlay's model hook; it repairs artifacts even after activation succeeded. |
+| doctor: AI Dev Kit source or Python imports missing | Run `pi-databricks/setup.d/26-enterprise-runtime.sh`. |
+| WARN: browser-worker unavailable | Configure its endpoint and token from the service operator, run `pi-shared/bin/pi-browser-check`, then restart Pi. |
 
 ## Overlays
 
