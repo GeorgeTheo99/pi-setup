@@ -71,6 +71,16 @@ def test_missing_optional_browser_is_warning_not_verified_readiness(tmp_path):
     assert "READY" not in result.stdout
 
 
+def test_selected_worker_with_missing_control_script_is_not_optional_success(tmp_path):
+    env, helpers = fixture(tmp_path)
+    worker_root = Path(env["PI_SETUP_CODE_ROOT"]) / "browser-worker"
+    worker_root.mkdir()
+    (helpers / "pi-browser-check").write_text('print("WARN: unavailable")\nraise SystemExit(2)\n')
+    result = run(env)
+    assert result.returncode == 1
+    assert "control script is missing/non-executable" in result.stdout
+
+
 def test_broken_browser_checker_is_not_optional_success(tmp_path):
     env, helpers = fixture(tmp_path)
     (helpers / "pi-browser-check").write_text('raise SystemExit(9)\n')

@@ -28,6 +28,7 @@ MANIFEST="$SETUP_DIR/manifest.yaml"
 
 MINIMAL=0
 UPDATE=0
+BROWSER_WORKER_INSTALLED=0
 declare -a WITH_MODULES=()
 declare -a OVERLAYS=()
 
@@ -108,20 +109,31 @@ install_module() {
   if [ -d "$dest/.git" ]; then
     if [ "$UPDATE" -eq 1 ]; then
       log "Updating $name..."
-      git -C "$dest" fetch -q origin
-      git -C "$dest" checkout -q "$ref" 2>/dev/null || true
-      git -C "$dest" pull -q --ff-only origin "$ref" 2>/dev/null || warn "$name: not fast-forwardable; left as-is"
+      git -C "$dest" fetch -q origin "$ref" || die "$name: fetch failed; check repository access and retry"
+      git -C "$dest" checkout -q "$ref" || die "$name: could not select the requested revision; preserve/reconcile local changes, then retry"
+      git -C "$dest" pull -q --ff-only origin "$ref" || die "$name: update is not fast-forwardable; reconcile the checkout before retrying"
     else
       log "$name already cloned; skipping fetch (use --update to pull)"
     fi
   else
     log "Cloning $name ($ref)..."
-    git clone -q "$repo" "$dest"
-    git -C "$dest" checkout -q "$ref" 2>/dev/null || true
+    git clone -q "$repo" "$dest" || die "$name: clone failed; check repository access/authentication and retry"
+    git -C "$dest" checkout -q "$ref" || die "$name: requested revision is unavailable; fetch the published revision and retry"
+  fi
+  # Exact manifest pins must also be honored by existing checkouts, even on a
+  # normal rerun. Never install an older dependency merely because it is cloned.
+  if [[ "$ref" =~ ^[0-9a-f]{40}$ ]] && [ "$(git -C "$dest" rev-parse HEAD)" != "$ref" ]; then
+    [ -z "$(git -C "$dest" status --porcelain)" ] \
+      || die "$name: pinned revision differs and checkout has local changes; preserve/reconcile them before retrying"
+    git -C "$dest" cat-file -e "$ref^{commit}" 2>/dev/null \
+      || git -C "$dest" fetch -q origin "$ref" \
+      || die "$name: cannot fetch pinned revision"
+    git -C "$dest" checkout -q --detach "$ref" || die "$name: cannot select pinned revision"
   fi
   if [ -x "$dest/install.sh" ]; then
     log "Installing $name..."
     (cd "$dest" && ./install.sh) || die "$name installer failed"
+    [ "$name" != browser-worker ] || BROWSER_WORKER_INSTALLED=1
   else
     warn "$name has no install.sh; cloned only"
   fi
@@ -133,10 +145,12 @@ run_overlay() {
     http*://*|git@*)
       dir="$CODE_ROOT/$(basename "$src" .git)"
       if [ -d "$dir/.git" ]; then
-        [ "$UPDATE" -eq 1 ] && git -C "$dir" pull -q --ff-only || true
+        if [ "$UPDATE" -eq 1 ]; then
+          git -C "$dir" pull -q --ff-only || die "overlay update failed; reconcile its checkout before retrying"
+        fi
       else
         log "Cloning overlay $(basename "$dir")..."
-        git clone -q "$src" "$dir"
+        git clone -q "$src" "$dir" || die "overlay clone failed; check repository access/authentication and retry"
       fi
       ;;
     *) dir="$(cd "$src" && pwd)" ;;
@@ -213,6 +227,13 @@ done < <(parse_manifest "$MANIFEST")
 for o in "${OVERLAYS[@]:-}"; do
   [ -n "$o" ] && run_overlay "$o"
 done
+
+# Enable only the worker whose module installer succeeded. This deliberately
+# runs after overlays, without changing their web_search/web_fetch endpoints.
+if [ "$BROWSER_WORKER_INSTALLED" -eq 1 ]; then
+  python3 "$SETUP_DIR/lib/configure_browser_worker.py" --worker-root "$CODE_ROOT/browser-worker" \
+    || die "browser-worker installed but client configuration failed; see repair instructions above"
+fi
 
 install_shell_rc
 

@@ -11,6 +11,7 @@ just clones, pins, installs, and health-checks them.
 |---|---|---|
 | [pi-shared](https://github.com/GeorgeTheo99/pi-shared) | required | Pi extensions (memory, subagents, browser automation, deep research, work plans, tool bundles), skills, prompts, themes, workflows |
 | [model-gateway](https://github.com/GeorgeTheo99/model-gateway) | recommended | Local model router on `:9111` — one endpoint for cloud providers (BYO keys) and local oMLX MLX models, with protocol translation |
+| [browser-worker](https://github.com/GeorgeTheo99/browser-worker) | recommended | Rendered public browsing on `:8890`, with local production credentials and a provisioned browser; independent of web search |
 | [local_web_search](https://github.com/GeorgeTheo99/local_web_search) | optional | Loopback web search / page retrieval broker on `:8889` (needs a personal Brave Search API key) |
 
 ## Prerequisites
@@ -30,6 +31,7 @@ cd ~/local_code/pi-setup
 
 ./install.sh                          # required + recommended
 ./install.sh --minimal                # pi-shared only
+./install.sh --minimal --with-browser-worker # shared resources + rendered browsing
 ./install.sh --with-local_web_search  # add the search broker
 ./install.sh --update                 # pull all modules + re-run installers
 ```
@@ -74,10 +76,19 @@ claim to have tested a fresh interactive shell. Third-party extension registrati
 code does execute, as it does at normal Pi startup. `--smoke-model` explicitly
 opts into an end-to-end completion and requires a standalone `PI_OK` response.
 
-Public browser tools are optional: a separately managed browser-worker and its
-authentication token must pass `pi-shared/bin/pi-browser-check`. Missing readiness
-is reported as **WARN / unavailable**, not silently counted as success. The
-Databricks search shim uses port `8891`; browser-worker defaults to `8890`.
+Normal installation includes the recommended browser-worker dependency. Its
+installer provisions the browser/runtime and a private, per-install
+`pi-production` token; users do not need an external API key or a token from
+another machine. After overlays complete, pi-setup verifies the worker and wires
+its URL/token **path** into the research configuration. No token value is stored
+in that configuration, and existing web-search endpoints are unchanged.
+
+The doctor checks the selected worker; an installed but broken dependency is a
+failure, not optional success. `--minimal` skips recommended modules;
+`--minimal --with-browser-worker` installs only shared resources plus browsing.
+Explicitly deselected browser capability remains clearly marked `DISABLED`.
+The Databricks search shim stays on `8891`; browser-worker defaults to `8890`.
+Re-running the Databricks web hook preserves an independently enabled worker.
 
 ### Recovery
 
@@ -88,7 +99,7 @@ Databricks search shim uses port `8891`; browser-worker defaults to `8890`.
 | `pi-list: command not found` | re-run `./install.sh` (adds the `~/.zshrc` block), then open a new shell |
 | doctor: model catalog/profile missing | Re-run the overlay's model hook; it repairs artifacts even after activation succeeded. |
 | doctor: AI Dev Kit source or Python imports missing | Run `pi-databricks/setup.d/26-enterprise-runtime.sh`. |
-| WARN: browser-worker unavailable | Configure its endpoint and token from the service operator, run `pi-shared/bin/pi-browser-check`, then restart Pi. |
+| Browser-worker unavailable | Re-run the installer (or `browser-worker/install.sh`), then `pi-shared/bin/pi-browser-check`. Custom deployments can set `browserWorkerMcpUrl`/`browserWorkerTokenFile` or the corresponding environment overrides. |
 
 ## Overlays
 

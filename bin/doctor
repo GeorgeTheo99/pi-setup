@@ -122,8 +122,30 @@ def main():
         doctor.warn("model-gateway not installed; generated model launchers are not configured")
 
     browser = shared / "bin/pi-browser-check"
+    worker_root = root / "browser-worker"
+    worker = worker_root / "scripts/browser-worker"
+    # A selected local dependency is required to verify. Do not downgrade an
+    # installed but broken worker to optional success. Explicit deselection is
+    # allowed and reported separately by pi-browser-check.
+    browser_selected = False
+    try:
+        research_path = home / ".pi/research/config.json"
+        research = json.loads(research_path.read_text()) if research_path.exists() else {}
+        if not isinstance(research, dict):
+            raise ValueError("research config must be an object")
+        browser_selected = research.get("browserWorkerEnabled", True) is not False
+    except (OSError, ValueError) as exc:
+        doctor.bad(f"Invalid browser selection configuration: {exc}")
+    installed_worker_selected = worker_root.exists() and browser_selected
+    if installed_worker_selected:
+        if not worker.is_file() or not os.access(worker, os.X_OK):
+            doctor.bad(f"Selected browser-worker control script is missing/non-executable; restore the checkout at {worker_root} and rerun the installer")
+        else:
+            doctor.command([str(worker), "verify"], timeout=90)
     if browser.is_file():
-        doctor.command([sys.executable, str(browser)], timeout=10, optional=True)
+        doctor.command([sys.executable, str(browser)], timeout=10, optional=not installed_worker_selected)
+    elif installed_worker_selected:
+        doctor.bad("Browser readiness helper missing; update pi-shared and retry")
     else:
         doctor.warn("Browser readiness helper missing; public browser capability has not been verified")
 
