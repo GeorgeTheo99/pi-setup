@@ -1,131 +1,265 @@
-#!/usr/bin/env bash
-# pi-setup doctor — read-only evidence for the composed Pi environment.
-# Usage: bin/doctor [--module NAME ...] [--overlay DIRECTORY ...]
-# Without --module, check known modules present under CODE_ROOT. Overlay code
-# is only executed when explicitly named. No provider requests or repairs.
-set -uo pipefail
+#!/usr/bin/env python3
+"""Check selected modules/profiles without shell startup, repair, or model calls.
 
-CODE_ROOT="${PI_SETUP_CODE_ROOT:-$HOME/local_code}"
-AGENT_DIR="${PI_CODING_AGENT_DIR:-${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}}"
-FAIL=0
-declare -a MODULES=()
-declare -a OVERLAYS=()
+Without --module, check known modules present under the code root. Overlay code
+runs only when explicitly named. Extension registration executes through Pi's
+SDK, just as at startup. --smoke-model ALIAS opts into one billable completion.
+"""
+from __future__ import annotations
 
-ok()   { printf '  \033[1;32mOK\033[0m    %s\n' "$*"; }
-bad()  { printf '  \033[1;31mFAIL\033[0m  %s\n' "$*"; FAIL=1; }
-skip() { printf '  \033[1;33mskip\033[0m  %s\n' "$*"; }
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --module|--overlay)
-      flag="$1"; shift
-      [ $# -gt 0 ] && [ -n "$1" ] || { bad "$flag requires a value"; exit 2; }
-      if [ "$flag" = --module ]; then MODULES+=("$1"); else OVERLAYS+=("$1"); fi
-      ;;
-    -h|--help) printf 'Usage: bin/doctor [--module NAME ...] [--overlay DIRECTORY ...]\n'; exit 0 ;;
-    *) bad "Unknown flag: $1"; exit 2 ;;
-  esac
-  shift
-done
-
-selected() {
-  [ "${#MODULES[@]}" -gt 0 ] || return 0
-  local name
-  for name in "${MODULES[@]}"; do [ "$name" = "$1" ] && return 0; done
-  return 1
-}
-
-check_service() {
-  local name="$1" checker="$2" evidence="$3"
-  if ! selected "$name"; then
-    skip "$name not selected"
-  elif [ ! -d "$CODE_ROOT/$name" ]; then
-    if [ "${#MODULES[@]}" -gt 0 ]; then bad "$name selected but missing"; else skip "$name not installed"; fi
-  else
-    ok "$name source present (not proof of installation or readiness)"
-    if [ ! -x "$checker" ]; then
-      bad "$name read-only verifier missing: $checker"
-    elif "$checker" verify; then
-      ok "$name: $evidence"
-    else
-      bad "$name verification failed; run: $checker verify"
-    fi
-  fi
-}
-
-echo "pi-setup doctor (read-only; no provider calls)"
-
-if command -v pi >/dev/null; then
-  if version="$(pi --version 2>/dev/null)" && [ -n "$version" ]; then
-    ok "pi CLI installed (${version%%$'\n'*})"
-  else
-    bad "pi CLI found but --version failed"
-  fi
-else
-  bad "pi CLI not on PATH — install Pi first (see README prerequisites)"
-fi
-
-if [ -d "$CODE_ROOT/pi-shared" ]; then
-  ok "pi-shared source present"
-  SETTINGS="$AGENT_DIR/settings.json"
-  if python3 - "$SETTINGS" "$CODE_ROOT/pi-shared" <<'PY'
-import json, sys
+import argparse
+import json
+import os
 from pathlib import Path
-try:
-    settings, package = Path(sys.argv[1]).expanduser(), Path(sys.argv[2]).resolve()
+import re
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+
+
+class Doctor:
+    def __init__(self):
+        self.failed = False
+
+    def ok(self, message):
+        print(f"  OK    {message}")
+
+    def bad(self, message):
+        self.failed = True
+        print(f"  FAIL  {message}")
+
+    def warn(self, message):
+        print(f"  WARN  {message}")
+
+    def command(self, argv, *, timeout=90, optional=False, required_line=None, require_output=False, env=None):
+        try:
+            process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                       start_new_session=True, env=env)
+            try:
+                out, err = process.communicate(timeout=timeout)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            self.bad(f"Cannot complete {shlex.join(map(str, argv))}: {exc}")
+            return False
+        text = (out + err).strip()
+        if optional and process.returncode == 2:
+            self.warn(text or f"Optional capability unavailable: {argv[0]}")
+            return False
+        if process.returncode != 0:
+            self.bad(f"Check exited {process.returncode}: {shlex.join(map(str, argv))}")
+            if text:
+                print(text[-6000:])
+            return False
+        if require_output and not out.strip():
+            self.bad(f"Command returned no output: {shlex.join(map(str, argv))}")
+            return False
+        if required_line is not None and required_line not in [line.strip() for line in out.splitlines()]:
+            self.bad(f"Command completed but did not return the expected response {required_line!r}")
+            return False
+        if text:
+            print(text[-6000:])
+        return True
+
+
+def package_configured(settings, package):
     data = json.loads(settings.read_text())
-    packages = data.get('packages', [])
-    if not isinstance(packages, list):
-        raise ValueError('packages must be an array')
-    for entry in packages:
-        source = entry.get('source') if isinstance(entry, dict) else entry
+    if not isinstance(data, dict) or not isinstance(data.get("packages", []), list):
+        raise ValueError("settings must be an object with a packages array")
+    for entry in data.get("packages", []):
+        source = entry.get("source") if isinstance(entry, dict) else entry
         if isinstance(source, str) and (settings.parent / Path(source).expanduser()).resolve() == package:
-            sys.exit(0)
-except (OSError, ValueError, TypeError, AttributeError):
-    pass
-sys.exit(1)
-PY
-  then
-    ok "pi-shared package configured in $SETTINGS (resource loading not tested)"
-    if [ ! -x "$CODE_ROOT/pi-shared/bin/pi-shared-check-deps" ]; then
-      bad "pi-shared dependency checker missing"
-    elif "$CODE_ROOT/pi-shared/bin/pi-shared-check-deps"; then
-      ok "pi-shared declared runtime dependencies resolve (extension execution not tested)"
-    else
-      bad "pi-shared dependency resolution failed"
-    fi
-  else
-    bad "pi-shared not configured as the expected local package, or invalid settings: $SETTINGS"
-  fi
-else
-  bad "pi-shared missing under $CODE_ROOT"
-fi
+            return True
+    return False
 
-# These module-owned checks understand persisted ports and use only local
-# health/readiness endpoints (search also checks MCP tools/list, never tools/call).
-check_service model-gateway "$CODE_ROOT/model-gateway/bin/model-gateway" \
-  "service identity/liveness verified; model catalog, provider credentials and inference NOT tested"
-check_service local_web_search "$CODE_ROOT/local_web_search/scripts/local-search" \
-  "local readiness and MCP tool inventory verified; Brave provider request NOT tested"
 
-for name in "${MODULES[@]:-}"; do
-  case "$name" in
-    ''|pi-shared|model-gateway|local_web_search) ;;
-    *) skip "$name has no built-in readiness check; use an explicitly selected overlay doctor" ;;
-  esac
-done
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--module", action="append", default=[], metavar="NAME")
+    parser.add_argument("--overlay", action="append", default=[], metavar="DIRECTORY")
+    parser.add_argument("--smoke-model", metavar="ALIAS")
+    parser.add_argument("--require-catalog", action="store_true",
+                        help="Require generated launchers/model profile even on a fresh direct-provider setup")
+    args = parser.parse_args()
+    if "" in args.module or "" in args.overlay:
+        parser.error("--module and --overlay require nonempty values")
+    args.overlay = [Path(value) for value in args.overlay]
+    home = Path.home()
+    root = Path(os.environ.get("PI_SETUP_CODE_ROOT", home / "local_code")).expanduser().resolve()
+    agent = Path(os.environ.get("PI_CODING_AGENT_DIR") or os.environ.get("PI_SHARED_AGENT_DIR")
+                 or home / ".pi/agent").expanduser().resolve()
+    shared = root / "pi-shared"
+    doctor = Doctor()
 
-for dir in "${OVERLAYS[@]:-}"; do
-  [ -n "$dir" ] || continue
-  if [ ! -d "$dir" ]; then
-    bad "Selected overlay missing: $dir"
-  elif [ -x "$dir/bin/doctor" ]; then
-    echo "selected overlay: $dir"
-    "$dir/bin/doctor" || bad "Overlay doctor failed: $dir"
-  else
-    skip "Selected overlay has no executable bin/doctor: $dir"
-  fi
-done
+    def selected(name):
+        return not args.module or name in args.module
 
-skip "End-to-end Pi/model/browser execution not tested; successful checks are not full runtime readiness"
-exit "$FAIL"
+    def service(name, checker, evidence):
+        if not selected(name):
+            doctor.warn(f"{name} not selected")
+            return False
+        if not (root / name).is_dir():
+            if args.module:
+                doctor.bad(f"{name} selected but missing")
+            else:
+                doctor.warn(f"{name} not installed")
+            return False
+        doctor.ok(f"{name} source present (not proof of installation or readiness)")
+        if not checker.is_file() or not os.access(checker, os.X_OK):
+            doctor.bad(f"{name} read-only verifier missing: {checker}")
+        elif doctor.command([str(checker), "verify"]):
+            doctor.ok(f"{name}: {evidence}")
+        else:
+            doctor.bad(f"{name} verification failed; run: {checker} verify")
+        return True
+
+    print("pi-setup doctor (no provider calls unless --smoke-model is selected)")
+    if not shutil.which("pi"):
+        doctor.bad("Pi CLI is not on PATH. Install Pi first; see pi-setup README prerequisites.")
+    elif not doctor.command(["pi", "--version"], timeout=15, require_output=True):
+        doctor.bad("pi CLI found but --version failed")
+
+    checker = shared / "bin/pi-shared-check-deps"
+    probe = shared / "bin/pi-profile-check"
+    if not shared.is_dir():
+        doctor.bad(f"pi-shared missing under {root}")
+    else:
+        doctor.ok("pi-shared source present")
+        settings = agent / "settings.json"
+        try:
+            configured = package_configured(settings, shared.resolve())
+        except (OSError, ValueError, TypeError, RuntimeError):
+            configured = False
+        if not configured:
+            doctor.bad(f"pi-shared not configured as the expected local package, or invalid settings: {settings}")
+        else:
+            doctor.ok(f"pi-shared package configured in {settings} (resource loading checked separately below)")
+            if not all(path.is_file() and os.access(path, os.X_OK) for path in (checker, probe)):
+                doctor.bad(f"Missing pi-shared health helpers. Repair: {shared / 'install.sh'}")
+            else:
+                if doctor.command([str(checker)]):
+                    doctor.ok("pi-shared declared runtime dependencies resolve")
+                else:
+                    doctor.bad("pi-shared dependency resolution failed")
+                doctor.command([str(probe), "--agent-dir", str(agent), "--expect-package", str(shared)])
+
+    # Module-owned verifiers honor persisted ports; no fixed HTTP /health fallback.
+    gateway = root / "model-gateway"
+    gateway_selected = service("model-gateway", gateway / "bin/model-gateway",
+                              "service identity/liveness verified; provider credentials and inference NOT tested")
+    service("local_web_search", root / "local_web_search/scripts/local-search",
+            "local readiness and MCP tool inventory verified; Brave provider request NOT tested")
+
+    launchers = home / ".pi/generated/pi-launchers.zsh"
+    catalog_selected = (launchers.exists() or (home / ".pi-omlx/agent/settings.json").exists())
+    if args.require_catalog or (gateway_selected and catalog_selected):
+        if not launchers.is_file():
+            doctor.bad(f"Missing launchers: {launchers}. Repair: rerun the overlay catalog hook.")
+        elif not shutil.which("zsh"):
+            doctor.bad("zsh is required for the generated model launchers")
+        else:
+            syntax_ok = doctor.command(["zsh", "-n", str(launchers)], timeout=10)
+            if os.environ.get("PI_SETUP_NO_SHELL_RC") == "1":
+                doctor.warn(f"Shell integration opted out; source {launchers} before using model launchers")
+            else:
+                rc = Path(os.environ.get("PI_SETUP_ZSHRC", home / ".zshrc")).expanduser()
+                try:
+                    lines = rc.read_text().splitlines() if rc.is_file() else []
+                    hooked = any(not line.lstrip().startswith("#") and "pi-launchers.zsh" in line
+                                 and ("source " in line or ". " in line) for line in lines)
+                except (OSError, ValueError) as exc:
+                    doctor.bad(f"Cannot inspect launcher hook in {rc}: {exc}")
+                    hooked = False
+                if not hooked:
+                    doctor.bad(f"No launcher hook in {rc}. Repair: rerun pi-setup/install.sh")
+                elif syntax_ok:
+                    doctor.ok("Launcher syntax and shell hook configured (shell startup not executed)")
+        if probe.is_file():
+            argv = [str(probe), "--agent-dir", str(home / ".pi-omlx/agent"),
+                    "--expect-package", str(shared), "--require-models"]
+            # Do not impose an unrelated sibling overlay on the generated profile.
+            for overlay in args.overlay:
+                if overlay.expanduser().resolve() == (root / "pi-databricks").resolve():
+                    argv += ["--expect-package", str(overlay.expanduser().resolve())]
+            doctor.command(argv)
+    elif gateway_selected:
+        doctor.warn("Generated model catalog not selected; direct Pi provider configuration remains available")
+
+    if not selected("browser-worker"):
+        doctor.warn("browser-worker not selected")
+    else:
+        browser = shared / "bin/pi-browser-check"
+        worker_root = root / "browser-worker"
+        worker = worker_root / "scripts/browser-worker"
+        browser_selected = None
+        try:
+            research_path = home / ".pi/research/config.json"
+            research = json.loads(research_path.read_text()) if research_path.exists() else {}
+            if not isinstance(research, dict):
+                raise ValueError("research config must be an object")
+            enabled = research.get("browserWorkerEnabled", True)
+            if not isinstance(enabled, bool):
+                raise ValueError("browserWorkerEnabled must be boolean")
+            browser_selected = enabled
+        except (OSError, ValueError) as exc:
+            doctor.bad(f"Invalid browser selection configuration: {exc}")
+        installed_worker_selected = worker_root.exists() and browser_selected is True
+        if args.module and not worker_root.is_dir():
+            doctor.bad("browser-worker selected but missing")
+        if installed_worker_selected:
+            if not worker.is_file() or not os.access(worker, os.X_OK):
+                doctor.bad(f"Selected browser-worker control script is missing/non-executable; restore the checkout at {worker_root} and rerun the installer")
+            else:
+                # This pinned operator bootstraps Python even for `verify`.
+                # Fail before invoking it when that prerequisite is absent;
+                # diagnostics must not silently provision an interpreter.
+                offline = {**os.environ, "UV_PYTHON_DOWNLOADS": "never", "UV_OFFLINE": "true"}
+                if not shutil.which("uv"):
+                    doctor.bad("Browser verification requires installed uv/Python 3.12; run the explicit browser-worker installer to provision them")
+                elif doctor.command(["uv", "python", "find", "--no-python-downloads", "3.12"],
+                                    timeout=15, require_output=True, env=offline):
+                    doctor.command([str(worker), "verify"], timeout=90, env=offline)
+                else:
+                    doctor.bad("Browser Python 3.12 prerequisite unavailable; worker operator was not invoked (no provisioning)")
+        if browser.is_file():
+            doctor.command([sys.executable, str(browser)], timeout=10, optional=not installed_worker_selected)
+        elif installed_worker_selected:
+            doctor.bad("Browser readiness helper missing; update pi-shared and retry")
+        elif browser_selected is False:
+            doctor.warn("DISABLED: browser-worker is not selected; browser readiness helper missing")
+        else:
+            doctor.warn("Browser readiness helper missing; public browser capability has not been verified")
+
+    for name in args.module:
+        if name not in {"pi-shared", "model-gateway", "local_web_search", "browser-worker"}:
+            doctor.warn(f"{name} has no built-in readiness check; use an explicitly selected overlay doctor")
+    for overlay in args.overlay:
+        overlay = overlay.expanduser().resolve()
+        check = overlay / "bin/doctor"
+        if not overlay.is_dir():
+            doctor.bad(f"Selected overlay missing: {overlay}")
+        elif check.is_file() and os.access(check, os.X_OK):
+            print(f"selected overlay: {overlay}")
+            if not doctor.command([str(check)], timeout=120):
+                doctor.bad(f"Overlay doctor failed: {overlay}")
+        else:
+            doctor.warn(f"Selected overlay has no executable bin/doctor: {overlay}")
+
+    if args.smoke_model:
+        if not re.fullmatch(r"[a-zA-Z0-9_-]+", args.smoke_model):
+            doctor.bad("--smoke-model must be a launcher alias (letters, numbers, _ or -)")
+        elif not launchers.is_file():
+            doctor.bad("Cannot smoke a model before launchers are installed")
+        else:
+            doctor.command(["zsh", "-f", "-c", 'source "$1"; "$2" --no-tools -p "Reply with exactly PI_OK"',
+                            "doctor", str(launchers), f"pi-{args.smoke_model}"], timeout=180, required_line="PI_OK")
+    doctor.warn("Browser execution and fresh interactive shell not tested; successful checks are not full runtime readiness")
+    return int(doctor.failed)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

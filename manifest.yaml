@@ -38,6 +38,15 @@ modules:
       Onboard a provider/model before expecting inference; /health is only
       liveness. See README.md and docs/provider-onboarding.md in the module.
 
+  browser-worker:
+    repo: https://github.com/GeorgeTheo99/browser-worker.git
+    ref: 871bd13f2d4cf5f8452b7052a07a4436f70de9de
+    tier: recommended
+    description: >-
+      Local rendered-browser MCP on 127.0.0.1:8890. Installs its locked Python
+      environment, Chromium and a per-user production token. Supplies
+      browser_fetch/browser_inspect independently of web_search/web_fetch.
+
   local_web_search:
     repo: https://github.com/GeorgeTheo99/local_web_search.git
     ref: main

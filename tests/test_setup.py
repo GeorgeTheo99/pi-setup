@@ -15,7 +15,7 @@ class Fixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix="pi-setup-test-")
         self.addCleanup(self.tmp.cleanup)
-        self.root = Path(self.tmp.name)
+        self.root = Path(self.tmp.name).resolve()
         self.home = self.root / "home"
         self.code = self.root / "code"
         self.setup = self.root / "setup"
@@ -31,6 +31,7 @@ class Fixture(unittest.TestCase):
         self.env = {
             "HOME": str(self.home), "PATH": str(self.tools),
             "PI_SETUP_CODE_ROOT": str(self.code), "LC_ALL": "C",
+            "PI_SETUP_NO_SHELL_RC": "1",
             "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
             "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath",
             "GIT_CONFIG_VALUE_0": os.devnull, "GIT_ALLOW_PROTOCOL": "file",
@@ -387,6 +388,7 @@ class DoctorTests(Fixture):
         super().setUp()
         self.shared = self.code / "pi-shared"
         self.script(self.shared / "bin/pi-shared-check-deps", 'echo deps >> "$CALLS"\nexit "${DEPS_EXIT:-0}"')
+        self.script(self.shared / "bin/pi-profile-check", 'echo "profile $*" >> "$CALLS"\nexit "${PROBE_EXIT:-0}"')
         self.settings = self.home / ".pi/agent/settings.json"
         self.configure([str(self.shared)])
 
@@ -398,6 +400,11 @@ class DoctorTests(Fixture):
         return self.run_cli(self.setup / "bin/doctor", *args, success=success)
 
     def service(self, name, checker):
+        if name == "model-gateway":
+            launchers = self.home / ".pi/generated/pi-launchers.zsh"
+            launchers.parent.mkdir(parents=True, exist_ok=True)
+            launchers.write_text("pi-list() { :; }\n")
+            self.script(self.tools / "zsh", 'test "$1" = -n || exit 97\necho "launcher syntax" >> "$CALLS"')
         self.script(self.code / name / checker,
                     f'test "$1" = verify || exit 97\necho "{name} verify" >> "$CALLS"\nexit "${{SERVICE_EXIT:-0}}"')
 
@@ -411,7 +418,8 @@ class DoctorTests(Fixture):
                     self.configure([entry])
                     output = self.doctor()
                     self.assertIn("package configured", output)
-                    self.assertIn("resource loading not tested", output)
+                    self.assertIn("resource loading checked separately", output)
+                    self.assertIn(f"profile --agent-dir {self.settings.parent}", self.calls())
 
     def test_substrings_wrong_shapes_and_invalid_json_fail(self):
         for packages in ([str(self.shared) + "-other"], [], "pi-shared", [{"source": 123}], None):
@@ -428,6 +436,7 @@ class DoctorTests(Fixture):
         self.env["PI_CODING_AGENT_DIR"] = str(self.settings.parent)
         self.configure([str(self.shared)])
         self.assertIn(str(self.settings), self.doctor())
+        self.assertIn(f"profile --agent-dir {self.settings.parent}", self.calls())
         self.settings.write_text("{}")
         self.doctor(success=False)  # must not fall back to valid default profile
 
@@ -444,6 +453,8 @@ class DoctorTests(Fixture):
         output = self.doctor()
         self.assertIn("model-gateway verify", self.calls())
         self.assertIn("local_web_search verify", self.calls())
+        self.assertIn(f"profile --agent-dir {self.home / '.pi-omlx/agent'}", self.calls())
+        self.assertIn("--require-models", self.calls())
         self.assertIn("inference NOT tested", output)
         self.assertIn("Brave provider request NOT tested", output)
         self.env["SERVICE_EXIT"] = "3"
