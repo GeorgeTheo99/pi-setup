@@ -6,7 +6,7 @@
 #   ./install.sh --minimal                  # required modules only
 #   ./install.sh --with-local_web_search    # add an optional module
 #   ./install.sh --overlay <dir-or-git-url> # apply an overlay (extra modules + hooks)
-#   ./install.sh --update                   # git pull每 module + re-run installers
+#   ./install.sh --update                   # fetch selected refs + re-run installers
 #
 # Overlays: a directory (or repo) containing manifest.fragment.yaml and an
 # optional setup.d/ of executable hooks run after module installs. Overlays
@@ -24,6 +24,7 @@ MINIMAL=0
 UPDATE=0
 declare -a WITH_MODULES=()
 declare -a OVERLAYS=()
+declare -a DOCTOR_ARGS=()
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -79,8 +80,13 @@ for raw in text.splitlines():
             continue
         if re.match(r"^[A-Za-z]", line):
             in_modules = False
+if not modules:
+    raise SystemExit(f"No modules found in {path}")
 for name, mod in modules.items():
-    print(f"{name}\t{mod.get('repo','')}\t{mod.get('ref','main')}\t{mod.get('tier','optional')}")
+    repo, ref, tier = mod.get('repo', ''), mod.get('ref', 'main'), mod.get('tier', 'optional')
+    if not repo or not ref or tier not in {'required', 'recommended', 'optional'} or any('\t' in v for v in (repo, ref, tier)):
+        raise SystemExit(f"Invalid module {name} in {path}")
+    print(f"{name}\t{repo}\t{ref}\t{tier}")
 PY
 }
 
@@ -95,51 +101,102 @@ wants_module() {
   return 1
 }
 
+checkout_repo() {
+  local repo="$1" dest="$2" ref="$3" fresh=0 top origin target branch='' head current status
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    top="$(git -C "$dest" rev-parse --show-toplevel 2>/dev/null)" || die "$dest is not a Git worktree"
+    [ "$(cd "$dest" && pwd -P)" = "$(cd "$top" && pwd -P)" ] || die "$dest is not a repository root"
+    origin="$(git -C "$dest" remote get-url origin)" || die "$dest has no origin"
+    [ "$origin" = "$repo" ] || die "$dest origin does not match manifest; reconcile it manually (no changes made)"
+    status="$(git -C "$dest" status --porcelain --untracked-files=all)" || die "$dest worktree status check failed"
+    [ -z "$status" ] || die "$dest has local changes; commit/stash them before installing"
+    if [ "$UPDATE" -eq 1 ]; then
+      log "Fetching $(basename "$dest")..."
+      git -C "$dest" fetch -q --prune --tags origin '+refs/heads/*:refs/remotes/origin/*' || die "$dest fetch failed; installer not run"
+    fi
+  else
+    log "Cloning $(basename "$dest")..."
+    git clone -q -- "$repo" "$dest" || die "$dest clone failed"
+    fresh=1
+  fi
+
+  # Remote overlays follow origin's recorded default branch. Modules use the
+  # explicit branch/tag/SHA in the manifest, never Git's checkout heuristics.
+  if [ -z "$ref" ]; then
+    ref="$(git -C "$dest" symbolic-ref --short refs/remotes/origin/HEAD)" || die "$dest has no origin default branch"
+    ref="${ref#origin/}"
+  fi
+  if git -C "$dest" show-ref --verify --quiet "refs/remotes/origin/$ref"; then
+    git -C "$dest" show-ref --verify --quiet "refs/tags/$ref" && die "$dest ref $ref is both a branch and tag"
+    branch="$ref"
+    target="refs/remotes/origin/$ref"
+  elif git -C "$dest" show-ref --verify --quiet "refs/tags/$ref"; then
+    target="refs/tags/$ref"
+  elif [[ "$ref" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
+    # Resolve object IDs, not revision names: a local branch named like a short
+    # SHA must never silently select a different commit. Multiple matches fail.
+    target="$(git -C "$dest" rev-parse --disambiguate="$ref")" || die "$dest SHA resolution failed"
+    [[ "$target" =~ ^[0-9a-fA-F]{40}$ ]] || die "$dest SHA $ref is missing or ambiguous"
+  else
+    die "$dest ref $ref not found; use --update to fetch or correct the manifest"
+  fi
+  target="$(git -C "$dest" rev-parse --verify "$target^{commit}")" || die "$dest ref $ref is not a commit"
+  head="$(git -C "$dest" rev-parse HEAD)" || die "$dest has no HEAD"
+  current="$(git -C "$dest" symbolic-ref --short -q HEAD || true)"
+
+  if [ "$fresh" -eq 0 ] && [ "$UPDATE" -eq 0 ]; then
+    if [ "$head" != "$target" ] || { [ -n "$branch" ] && [ "$current" != "$branch" ]; }; then
+      die "$dest checkout does not match $ref; use --update (local work is never reset)"
+    fi
+    log "$(basename "$dest") matches $ref (cached refs; no fetch)"
+    return 0
+  fi
+  # Never abandon unreferenced detached work or reset an ahead/diverged branch.
+  if [ "$fresh" -eq 0 ] && [ -z "$current" ] && [ "$head" != "$target" ]; then
+    [ -n "$(git -C "$dest" for-each-ref --contains "$head" --format='%(refname)' refs/heads/ refs/tags/ refs/remotes/)" ] || die "$dest has detached work; create a branch before changing refs"
+  fi
+  if [ -n "$branch" ]; then
+    if git -C "$dest" show-ref --verify --quiet "refs/heads/$branch"; then
+      git -C "$dest" merge-base --is-ancestor "refs/heads/$branch" "$target" || die "$dest branch $branch is ahead or diverged; reconcile manually"
+      git -C "$dest" checkout -q --no-overwrite-ignore "$branch" || die "$dest checkout failed"
+      git -C "$dest" merge -q --ff-only --no-overwrite-ignore "$target" || die "$dest fast-forward failed"
+    else
+      git -C "$dest" checkout -q --no-overwrite-ignore -b "$branch" --track "origin/$branch" || die "$dest checkout failed"
+    fi
+  else
+    git -C "$dest" checkout -q --no-overwrite-ignore --detach "$target^{commit}" || die "$dest checkout failed"
+  fi
+  [ "$(git -C "$dest" rev-parse HEAD)" = "$target" ] || die "$dest revision verification failed"
+}
+
 install_module() {
   local name="$1" repo="$2" ref="$3"
   local dest="$CODE_ROOT/$name"
-  if [ -d "$dest/.git" ]; then
-    if [ "$UPDATE" -eq 1 ]; then
-      log "Updating $name..."
-      git -C "$dest" fetch -q origin
-      git -C "$dest" checkout -q "$ref" 2>/dev/null || true
-      git -C "$dest" pull -q --ff-only origin "$ref" 2>/dev/null || warn "$name: not fast-forwardable; left as-is"
-    else
-      log "$name already cloned; skipping fetch (use --update to pull)"
-    fi
-  else
-    log "Cloning $name ($ref)..."
-    git clone -q "$repo" "$dest"
-    git -C "$dest" checkout -q "$ref" 2>/dev/null || true
-  fi
-  if [ -x "$dest/install.sh" ]; then
-    log "Installing $name..."
-    (cd "$dest" && ./install.sh) || die "$name installer failed"
-  else
-    warn "$name has no install.sh; cloned only"
-  fi
+  checkout_repo "$repo" "$dest" "$ref"
+  [ -x "$dest/install.sh" ] || die "$name has no executable install.sh; installation incomplete"
+  log "Installing $name..."
+  (cd "$dest" && ./install.sh) || die "$name installer failed"
+  DOCTOR_ARGS+=(--module "$name")
 }
 
 run_overlay() {
-  local src="$1" dir
+  local src="$1" dir rows
   case "$src" in
-    http*://*|git@*)
+    *://*|git@*)
       dir="$CODE_ROOT/$(basename "$src" .git)"
-      if [ -d "$dir/.git" ]; then
-        [ "$UPDATE" -eq 1 ] && git -C "$dir" pull -q --ff-only || true
-      else
-        log "Cloning overlay $(basename "$dir")..."
-        git clone -q "$src" "$dir"
-      fi
+      checkout_repo "$src" "$dir" ""
       ;;
     *) dir="$(cd "$src" && pwd)" ;;
   esac
   if [ -f "$dir/manifest.fragment.yaml" ]; then
     log "Overlay modules from $(basename "$dir")..."
+    rows="$(parse_manifest "$dir/manifest.fragment.yaml")" || die "Invalid overlay manifest"
     while IFS=$'\t' read -r name repo ref tier; do
       [ -n "$name" ] || continue
-      wants_module "$tier" "$name" && install_module "$name" "$repo" "$ref"
-    done < <(parse_manifest "$dir/manifest.fragment.yaml")
+      if wants_module "$tier" "$name"; then
+        install_module "$name" "$repo" "$ref"
+      fi
+    done <<< "$rows"
   fi
   if [ -d "$dir/setup.d" ]; then
     local hook
@@ -149,6 +206,7 @@ run_overlay() {
       "$hook" || die "Overlay hook failed: $hook"
     done
   fi
+  DOCTOR_ARGS+=(--overlay "$dir")
 }
 
 # ---------------------------------------------------------------------------
@@ -157,6 +215,7 @@ run_overlay() {
 mkdir -p "$CODE_ROOT"
 log "Modules root: $CODE_ROOT"
 
+rows="$(parse_manifest "$MANIFEST")" || die "Invalid module manifest"
 while IFS=$'\t' read -r name repo ref tier; do
   [ -n "$name" ] || continue
   if wants_module "$tier" "$name"; then
@@ -164,13 +223,16 @@ while IFS=$'\t' read -r name repo ref tier; do
   else
     log "Skipping $name ($tier)"
   fi
-done < <(parse_manifest "$MANIFEST")
+done <<< "$rows"
 
 for o in "${OVERLAYS[@]:-}"; do
-  [ -n "$o" ] && run_overlay "$o"
+  if [ -n "$o" ]; then run_overlay "$o"; fi
 done
 
 log "Running doctor..."
-"$SETUP_DIR/bin/doctor" || warn "doctor reported issues (see above)"
+# pi-shared installs into PI_SHARED_AGENT_DIR (default ~/.pi/agent), not the
+# calling shell's PI_CODING_AGENT_DIR. Verify the profile we actually installed.
+PI_CODING_AGENT_DIR="${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}" \
+  "$SETUP_DIR/bin/doctor" "${DOCTOR_ARGS[@]}" || die "Installation checks failed; review diagnostics above (completed module installs were not rolled back)"
 
-log "Done. Start a new shell, then run: pi"
+log "Selected module checks passed. Start a new shell, then run: pi (provider authentication/readiness is separate)."

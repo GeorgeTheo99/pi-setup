@@ -9,7 +9,8 @@
 #   optional    — installed only with --with-<name>
 #
 # ref: branch, tag, or SHA to check out. Pin tags/SHAs for reproducible
-# installs; "main" tracks latest.
+# installs; "main" advances only with --update. Existing origins must match
+# repo exactly. Local modifications and non-fast-forward updates stop installs.
 
 version: 1
 
@@ -33,9 +34,9 @@ modules:
       speaking OpenAI Chat/Responses and Anthropic protocols. Skip it
       (--minimal) if you configure Pi providers directly.
     post_install_note: >-
-      Provision a model-info.json catalog and provider keys in
-      config/config.yaml before models become available. See
-      docs/deployment.md in the module.
+      The installer bootstraps a starter catalog and empty provider config.
+      Onboard a provider/model before expecting inference; /health is only
+      liveness. See README.md and docs/provider-onboarding.md in the module.
 
   local_web_search:
     repo: https://github.com/GeorgeTheo99/local_web_search.git
@@ -46,5 +47,7 @@ modules:
       (FastMCP + Brave Search). Powers pi-shared's web_search / web_fetch /
       deep_research tools. Requires a personal Brave Search API key.
     post_install_note: >-
-      Set your Brave key: either BRAVE_API_KEY in the service environment or
-      the mode-0600 secret file the broker documents (see module README).
+      BEFORE installing: pre-clone this module and create its owner-only
+      data/brave_key (mode 0600, data directory 0700), or use its documented
+      custom data directory. See the module README; the installer starts
+      the service and fails if its required credential is absent or unsafe.
