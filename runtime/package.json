@@ -1,6 +1,6 @@
 {
   "name": "pi-shared-runtime",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Homebrew-owned Pi runtime; update with brew, not npm globally",
   "engines": { "node": ">=22.19.0" },

@@ -40,7 +40,7 @@ modules:
 
   browser-worker:
     repo: https://github.com/GeorgeTheo99/browser-worker.git
-    ref: 871bd13f2d4cf5f8452b7052a07a4436f70de9de
+    ref: 3416717d1e69a279e74846091a04f29c4200f2ef
     tier: recommended
     description: >-
       Local rendered-browser MCP on 127.0.0.1:8890. Installs its locked Python
