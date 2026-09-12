@@ -6,6 +6,30 @@ repo. Each module is its own git repository with its own installer; `pi-setup`
 just clones, pins, installs, and checks local configuration/service evidence.
 A successful check is not proof that provider authentication or inference works.
 
+## Homebrew entry point: `pi-shared`
+
+The public command is **`pi-shared`**; this repository owns its orchestration.
+The companion `homebrew-tap` repository owns the formula, not another installer.
+See [Homebrew setup](docs/homebrew.md) for the staged distribution, local testing,
+service ownership, and release gate. The tap is not published by these changes.
+
+After installing a published formula, the intended workflow is:
+
+```bash
+pi-shared setup                         # interactive choices and final approval
+pi-shared setup --mode cloud --plan     # read-only preview; no downloads or commands
+pi-shared setup --local                 # opt into oMLX options, now or later
+pi-shared status                        # selected module checks, not inference proof
+pi                                     # authenticate with /login and select /model
+```
+
+Homebrew installs Node, Python, uv, Git and a pinned, lockfile-backed Pi runtime.
+It does **not** run setup, start services, modify Pi profiles, or download LLM
+weights during package installation. `setup` explicitly delegates to the same
+module installers used below. The new CLI defaults writable module checkouts to
+`~/.local/share/pi-shared/modules`; `PI_SETUP_CODE_ROOT` overrides this. The legacy
+`./install.sh` keeps its existing `~/local_code` default.
+
 ## Modules
 
 | Module | Tier | What it provides |

@@ -1,0 +1,329 @@
+#!/usr/bin/env python3
+"""Public setup entry point. Installation is explicit; help and plans are read-only."""
+from __future__ import annotations
+
+import argparse
+import http.client
+import json
+import os
+from pathlib import Path
+import platform
+import shlex
+import shutil
+import socket
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+
+ROOT = Path(__file__).resolve().parents[1]
+MODULES = {"pi-shared", "model-gateway", "browser-worker", "local_web_search"}
+OMLX_FORMULA = "jundot/omlx/omlx"
+OMLX_GUIDE = "https://github.com/jundot/omlx#installation"
+
+
+def run(args, *, env=None):
+    sys.stdout.flush()
+    sys.stderr.flush()
+    subprocess.run([str(a) for a in args], check=True, env=env)
+
+
+def choose(question, choices):
+    print(question)
+    for key, label in choices.items():
+        print(f"  {key}: {label}")
+    while True:
+        answer = input("Choice (or cancel): ").strip().lower()
+        if answer == "cancel":
+            raise KeyboardInterrupt
+        if answer in choices:
+            return answer
+        print("Select one of the listed choices.")
+
+
+def loopback_url(value):
+    try:
+        u = urllib.parse.urlsplit(value)
+        port = u.port
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("Invalid oMLX URL") from exc
+    if (u.scheme != "http" or u.hostname not in {"127.0.0.1", "::1"}
+            or u.username is not None or u.password is not None
+            or u.query or u.fragment or u.path.rstrip("/") != "/v1"
+            or (port is not None and not 1 <= port <= 65535)):
+        raise argparse.ArgumentTypeError(
+            "Use an explicit loopback URL such as http://127.0.0.1:8000/v1; "
+            "remote/authenticated servers require manual configuration.")
+    return value.rstrip("/")
+
+
+def hardware():
+    if platform.system() != "Darwin" or platform.machine() != "arm64":
+        raise RuntimeError("Local oMLX installation requires an Apple Silicon Mac (native arm64 shell).")
+    version = platform.mac_ver()[0]
+    if not version or int(version.split(".")[0]) < 15:
+        raise RuntimeError("Local oMLX installation requires macOS 15 or newer.")
+    total = int(subprocess.check_output(["/usr/sbin/sysctl", "-n", "hw.memsize"], text=True))
+    free = shutil.disk_usage(Path.home()).free
+    print(f"Hardware: {total / 2**30:.1f} GiB total RAM; {free / 2**30:.1f} GiB free disk.")
+    print("Model fit depends on available RAM, quantization, context and cache; no model fit is assumed.")
+
+
+def guard_fresh_omlx():
+    # Never adopt a separately managed service or overwrite its settings.
+    paths = [Path.home() / ".omlx", Path.home() / "Library/LaunchAgents/com.local.omlx.plist",
+             Path.home() / "Library/LaunchAgents/homebrew.mxcl.omlx.plist"]
+    if shutil.which("omlx") or any(p.exists() or p.is_symlink() for p in paths):
+        raise RuntimeError("Existing oMLX installation/settings found; choose --omlx existing or guide. "
+                           "Its service manager will not be replaced.")
+    try:
+        with socket.create_connection(("127.0.0.1", 8000), timeout=1):
+            raise RuntimeError("Port 8000 is occupied; use an existing server or configure oMLX manually.")
+    except OSError:
+        pass
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError("oMLX redirected the request; automatic redirects are disabled.")
+
+
+def discover_models(url):
+    # Explicit numeric loopback, no proxies, redirects, credentials or model calls.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    try:
+        with opener.open(url + "/models", timeout=10) as response:
+            raw = response.read(1024 * 1024 + 1)
+        if len(raw) > 1024 * 1024:
+            raise RuntimeError("oMLX model listing exceeded the size limit.")
+        data = json.loads(raw)
+        if not isinstance(data, dict) or not isinstance(data.get("data"), list):
+            raise ValueError
+        models = data["data"]
+        if any(not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"] for m in models):
+            raise ValueError
+    except urllib.error.HTTPError as exc:
+        raise RuntimeError(f"oMLX discovery returned HTTP {exc.code}; configure authentication manually if required.") from None
+    except (ValueError, OSError, http.client.HTTPException) as exc:
+        raise RuntimeError("Could not read a valid oMLX model listing; check URL, service and authentication.") from exc
+    print(f"oMLX discovery: {len(models)} model(s); inference and Pi routing NOT verified.")
+    for model in models[:50]:
+        print("  " + json.dumps(model["id"], ensure_ascii=True))
+    if not models:
+        print("No models installed. Review download size and memory needs in oMLX /admin before downloading.")
+
+
+def state_path():
+    return Path.home() / ".config/pi-shared/setup.json"
+
+
+def write_state(value):
+    path = state_path()
+    for parent in (Path.home() / ".config", path.parent):
+        if parent.is_symlink():
+            raise RuntimeError(f"Refusing symlinked setup state directory: {parent}")
+        parent.mkdir(mode=0o700, exist_ok=True)
+        info = parent.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise RuntimeError(f"Setup state directory must be owned by you and not group/world writable: {parent}")
+    if path.is_symlink() or (path.exists() and (not path.is_file() or path.stat().st_nlink != 1
+                                              or path.stat().st_uid != os.getuid())):
+        raise RuntimeError("Refusing unsafe setup state file.")
+    fd, name = tempfile.mkstemp(prefix=".setup-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump(value, f, indent=2)
+            f.write("\n")
+        os.replace(name, path)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def guidance(args, code_root):
+    if args.mode in {"cloud", "both"}:
+        print("Cloud models: run pi, then /login (or configure your own provider key) and /model.")
+    if args.mode in {"local", "both"}:
+        print(f"oMLX installation/model management: {OMLX_GUIDE}")
+        print("No model weights downloaded by pi-shared. Review size and memory fit before any download.")
+        print("Local inference remains PENDING: select a model in oMLX, configure a reviewed Pi/gateway route, "
+              "then test an actual response. Discovery alone does not configure Pi.")
+        print(f"Gateway guidance: {code_root / 'model-gateway/docs/provider-onboarding.md'} "
+              "(the HTTPS cloud onboarding generator does not support local HTTP oMLX URLs).")
+    if args.recovery == "guide":
+        print("pi-fallback: OPTIONAL, independent Apple Silicon recovery prototype; not installed here.")
+        print("Use a separately trusted contained release (Pi/Node + Python/MLX), then run:")
+        print("  pi-fallback models list\n  pi-fallback models discover\n  pi-fallback models install\n"
+              "  pi-fallback doctor --tool-smoke")
+        print("Review model download size first. Offline recovery is NOT ready until a real model/tool test "
+              "passes without a skipped check. No published Homebrew recovery formula is assumed.")
+
+
+def setup(args):
+    interactive = sys.stdin.isatty() and not args.yes and not args.plan
+    if args.local:
+        if args.mode not in {None, "local"}:
+            raise RuntimeError("--local cannot be combined with a different --mode.")
+        args.mode = "local"
+    if args.mode is None:
+        if not interactive:
+            raise RuntimeError("Specify --mode cloud|local|both|later in non-interactive mode.")
+        args.mode = choose("How would you like to run models?", {
+            "cloud": "Cloud providers — subscription login or API keys",
+            "local": "Local models with oMLX — Apple Silicon Mac required for installation",
+            "both": "Both cloud and local models", "later": "Configure models later"})
+    local = args.mode in {"local", "both"}
+    if not local and (args.omlx or args.omlx_url):
+        raise RuntimeError("oMLX options require --mode local/both or --local.")
+    if local and args.omlx is None:
+        args.omlx = choose("Optional oMLX setup:", {
+            "existing": "Discover models on an existing local server (do not change its service)",
+            "install": "Install and start a NEW oMLX Homebrew service (macOS 15+, Apple Silicon)",
+            "guide": "Show instructions; configure local serving later"}) if interactive else "guide"
+    if args.omlx == "existing" and not args.omlx_url:
+        if not interactive:
+            raise RuntimeError("--omlx existing requires --omlx-url (no port is assumed).")
+        args.omlx_url = loopback_url(input("OpenAI base URL (e.g. http://127.0.0.1:8000/v1): ").strip())
+    if args.omlx_url and args.omlx != "existing":
+        raise RuntimeError("--omlx-url is only used with --omlx existing.")
+    if args.recovery is None:
+        args.recovery = choose("Optional independent recovery kit:", {
+            "skip": "Skip (default; no recovery download)",
+            "guide": "Show pi-fallback prototype preparation instructions"}) if interactive else "skip"
+
+    code_root = Path(os.environ.get("PI_SETUP_CODE_ROOT", str(Path.home() / ".local/share/pi-shared/modules"))).expanduser().resolve()
+    flags = ["--minimal"]
+    modules = ["pi-shared"]
+    if args.mode != "later":
+        modules.append("model-gateway")
+    if not args.without_browser:
+        modules.append("browser-worker")
+    if args.with_search:
+        modules.append("local_web_search")
+    flags += [f"--with-{m}" for m in modules[1:]]
+    if args.update:
+        flags.append("--update")
+    print("Setup plan (Homebrew installation alone does not run this):")
+    print(f"  Modules: {', '.join(modules)}\n  Writable module root: {code_root}")
+    print("  Install locked module dependencies, wire Pi profiles and ~/.zshrc, start selected services, run doctor.")
+    print("  Existing selected services may restart. Unselected modules/services are not removed or stopped.")
+    if "browser-worker" in modules:
+        print("  Browser selection downloads Chromium. No LLM weights are downloaded.")
+    else:
+        print("  No browser or LLM weights are downloaded.")
+    print("  Command: " + shlex.join([str(ROOT / "install.sh"), *flags]))
+    print(f"  oMLX: {args.omlx or 'not selected'}; recovery: {args.recovery}")
+    if args.with_search:
+        print("  Search requires a pre-provisioned owner-only Brave API key; see the search module README.")
+    if args.plan:
+        guidance(args, code_root)
+        return 0
+    if platform.system() != "Darwin":
+        raise RuntimeError("Service setup currently supports macOS only.")
+    for command in ("pi", "node", "npm", "git", "uv", "python3"):
+        if not shutil.which(command):
+            raise RuntimeError(f"Missing {command}; install the Homebrew pi-shared package or see README prerequisites.")
+    if args.omlx == "install":
+        if not shutil.which("brew"):
+            raise RuntimeError("Homebrew is required to install oMLX.")
+        hardware()
+        guard_fresh_omlx()
+    if not args.yes:
+        if not interactive:
+            raise RuntimeError("Setup needs a terminal or --yes. Use --plan to inspect without changes.")
+        if input("Apply this plan? [y/N] ").strip().lower() not in {"y", "yes"}:
+            print("Cancelled; no installation changes made.")
+            return 0
+    agent_dir = str(Path(os.environ.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve())
+    state = {"version": 1, "status": "incomplete", "code_root": str(code_root),
+             "modules": modules, "agent_dir": agent_dir,
+             "mode": args.mode, "omlx": args.omlx, "omlx_url": args.omlx_url}
+    write_state(state)
+    env = {**os.environ, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
+    run([ROOT / "install.sh", *flags], env=env)
+    if args.omlx == "install":
+        run(["brew", "tap", "jundot/omlx", "https://github.com/jundot/omlx"])
+        run(["brew", "install", OMLX_FORMULA])
+        run(["brew", "services", "start", OMLX_FORMULA])
+        print("Waiting up to 60 seconds for oMLX model discovery (not inference)...", flush=True)
+        deadline = time.monotonic() + 60
+        while True:
+            try:
+                discover_models("http://127.0.0.1:8000/v1")
+                break
+            except RuntimeError:
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("oMLX startup discovery failed; inspect brew services info omlx. "
+                                       "Its service was not stopped. Retry with --omlx existing --omlx-url http://127.0.0.1:8000/v1.") from None
+                time.sleep(2)
+        print("oMLX model listing responds; model readiness not tested. Manage models at http://127.0.0.1:8000/admin.")
+    elif args.omlx == "existing":
+        discover_models(args.omlx_url)
+    state["status"] = "module-checks-passed"
+    write_state(state)
+    print("Selected module checks passed. Authentication, local routing, inference and recovery readiness are separate.")
+    guidance(args, code_root)
+    return 0
+
+
+def status():
+    path = state_path()
+    if not path.is_file() or path.is_symlink():
+        raise RuntimeError("No safe setup receipt found. Run pi-shared setup; source-only users can use bin/doctor.")
+    info = path.stat()
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+        raise RuntimeError("Setup receipt must be owned by you with mode 0600.")
+    data = json.loads(path.read_text())
+    if (not isinstance(data, dict) or data.get("version") != 1
+            or not isinstance(data.get("modules"), list) or not data["modules"]
+            or any(not isinstance(m, str) or m not in MODULES for m in data["modules"])
+            or not isinstance(data.get("code_root"), str) or not Path(data["code_root"]).is_absolute()
+            or not isinstance(data.get("agent_dir"), str) or not Path(data["agent_dir"]).is_absolute()
+            or data.get("status") not in {"incomplete", "module-checks-passed"}):
+        raise RuntimeError("Invalid setup receipt; rerun setup after reviewing configuration.")
+    if data["status"] == "incomplete":
+        raise RuntimeError("Previous setup did not complete; rerun its plan to repair. Completed installs were not rolled back.")
+    print("Checking last selected modules only; provider/model/recovery readiness is not implied.", flush=True)
+    env = {**os.environ, "PI_SETUP_CODE_ROOT": data["code_root"], "PI_CODING_AGENT_DIR": data["agent_dir"]}
+    run([ROOT / "bin/doctor", *[arg for m in data["modules"] for arg in ("--module", m)]], env=env)
+    if data.get("omlx"):
+        print("oMLX is separately managed; status does not test its service or model inference.")
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.0")
+    commands = parser.add_subparsers(dest="command", required=True)
+    p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
+    p.add_argument("--mode", choices=["cloud", "local", "both", "later"])
+    p.add_argument("--local", action="store_true", help="Shortcut for --mode local; oMLX remains opt-in")
+    p.add_argument("--omlx", choices=["existing", "install", "guide"], help="Default: prompt, or guide in non-interactive mode")
+    p.add_argument("--omlx-url", type=loopback_url, help="Explicit numeric loopback OpenAI URL for existing oMLX")
+    p.add_argument("--recovery", choices=["skip", "guide"], help="Independent pi-fallback prototype; no automatic installation")
+    p.add_argument("--without-browser", action="store_true", help="Do not select browser-worker/Chromium")
+    p.add_argument("--with-search", action="store_true", help="Select search (pre-provision Brave key per module README first)")
+    p.add_argument("--update", action="store_true", help="Explicitly fetch/update selected writable module checkouts")
+    p.add_argument("--yes", action="store_true", help="Apply explicit choices without prompting; never download LLM weights")
+    p.add_argument("--plan", action="store_true", help="Show plan without commands, downloads, network or file changes")
+    commands.add_parser("status", help="Run doctor for the last successfully selected modules (executes trusted extension checks)")
+    args = parser.parse_args()
+    try:
+        return setup(args) if args.command == "setup" else status()
+    except (EOFError, KeyboardInterrupt):
+        print("\nCancelled; completed actions, if any, were not rolled back.", file=sys.stderr)
+        return 130
+    except (RuntimeError, OSError, ValueError, argparse.ArgumentTypeError) as exc:
+        print(f"pi-shared: {exc}", file=sys.stderr)
+        return 1
+    except subprocess.CalledProcessError as exc:
+        print(f"pi-shared: command failed ({exc.returncode}); setup incomplete. Completed actions were not rolled back.", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
