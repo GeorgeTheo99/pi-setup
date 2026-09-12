@@ -69,6 +69,34 @@ origin/ref/clean-worktree rules. No developer checkout is silently adopted,
 reset, overwritten or replaced. Selection is additive: skipping a module does
 not stop or uninstall an earlier selection.
 
+## Shell commands before model configuration
+
+Open a new shell after setup and run `pi-list`. Fresh setups include `pi-list`,
+`pi-regen`, `pi-shared-update`, `pi-restart`, `pi-default`, and `pi-openai` without
+requiring a gateway catalog. Sourcing the launcher only defines commands and
+appends `~/.local/bin` to PATH once; it does not repair profiles, contact models,
+or start services. Existing generated direct-launcher choices and explicit
+`PI_SHARED_DIRECT_LAUNCHERS=0` opt-outs survive reruns.
+
+Until the alias export is configured, `pi-list` says so and no placeholder
+`models.json` is written. The future gateway profile is wired in advance.
+Configure the gateway to export the alias catalog at the path shown by `pi-list`,
+then run `pi-regen`; it creates model shortcuts and reloads them into the current
+shell. Direct Pi `/login` alone does not create gateway aliases. Missing or
+invalid input never replaces a configured launcher with an empty list.
+
+Setup opts into this compatible shared-installer feature with
+`PI_SHARED_BOOTSTRAP_LAUNCHERS=1`; setting it to `0` opts out. Status remembers
+whether command bootstrap was requested and verifies the shell/profile without
+requiring nonexistent gateway models. `--require-catalog` on the underlying
+doctor remains strict. New setup must be paired with a pi-shared version that
+supports bootstrap; missing generated launchers fail the requested check.
+
+`pi-restart` still requires an installed service. For oMLX it uses the existing
+server-ci manager, or oMLX's own app/Homebrew CLI when server-ci is absent. It
+never installs a service as a side effect of restart. `pi-shared-update` updates
+the writable shared-resource checkout, not Homebrew's packaged Pi runtime.
+
 ## oMLX: optional, never an implicit model download
 
 Setup offers three actions:

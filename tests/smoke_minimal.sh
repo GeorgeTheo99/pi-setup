@@ -30,6 +30,14 @@ env -i HOME="$STAGE/home" TMPDIR="$STAGE/tmp" \
     npm ci --prefix "$stage/runtime" --ignore-scripts --no-audit --no-fund
     "$stage/setup/bin/pi-shared" setup --mode later --without-browser --yes
     "$stage/setup/bin/pi-shared" status
+    zsh -f -c "
+      source \"\$HOME/.zshrc\" || exit \$?
+      for name in pi-list pi-regen pi-shared-update pi-default pi-openai pi-restart; do
+        (( \$+functions[\$name] )) || exit 8
+      done
+      pi-list || exit \$?
+      pi-regen --check
+    "
     python3 - <<PY
 import json, os
 from pathlib import Path
@@ -42,6 +50,17 @@ assert not (home / "Library/LaunchAgents").exists(), "unexpected service registr
 assert not (home / ".omlx").exists(), "unexpected oMLX state"
 assert not (home / ".pi-fallback").exists(), "unexpected recovery state"
 assert not (home / ".cache/ms-playwright").exists(), "unexpected browser download"
-print("MINIMAL_SETUP_SMOKE_OK: actual dependency install/profile loading/status passed; no service/model setup")
+assert not (home / ".pi-omlx/agent/models.json").exists(), "unexpected placeholder models"
+# Synthetic route only: never invoke it or contact a model/provider.
+(home / ".pi/model-aliases.json").write_text(json.dumps({"cloud:ci-fixture": {
+    "name": "ci-fixture", "alias": "ci-fixture", "provider_model_id": "ci-fixture"}}))
 PY
+    zsh -f -c "
+      source \"\$HOME/.zshrc\" || exit \$?
+      pi-regen --quiet || exit
+      (( \$+functions[pi-ci-fixture] )) || exit 9
+      pi-regen --check
+    "
+    "$stage/setup/bin/pi-shared" status
+    echo "MINIMAL_SETUP_SMOKE_OK: commands, catalog transition, profile loading and status passed; no service/model calls"
   ' smoke "$STAGE"

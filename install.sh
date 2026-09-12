@@ -299,7 +299,7 @@ PI_CODING_AGENT_DIR="${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}" \
 
 log "Selected module checks passed (provider authentication/readiness is separate)."
 if [ -s "$LAUNCHERS" ]; then
-  log "Start a new shell, run \`pi-list\` to see your models, then launch an available alias, e.g. \`pi-sonnet\`."
+  log "Start a new shell and run \`pi-list\` to see available commands. Model launchers appear after a gateway alias catalog is configured."
   log "(Bare \`pi\` uses the active profile, not necessarily the generated model catalog.)"
 else
   log "Start a new shell, then run: pi"

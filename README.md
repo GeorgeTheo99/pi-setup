@@ -23,6 +23,12 @@ pi-shared status                        # selected module checks, not inference 
 pi                                     # authenticate with /login and select /model
 ```
 
+Fresh setup enables `pi-list`, `pi-regen`, `pi-shared-update`, `pi-restart`,
+`pi-default`, and `pi-openai` even before a gateway alias catalog exists. Open a
+new shell after setup. `pi-list` explains the unconfigured state; model shortcuts
+appear after configuring the gateway alias export and running `pi-regen`.
+Existing direct-launcher choices and explicit opt-outs are preserved.
+
 Homebrew installs Node, Python, uv, Git and a pinned, lockfile-backed Pi runtime.
 It does **not** run setup, start services, modify Pi profiles, or download LLM
 weights during package installation. `setup` explicitly delegates to the same

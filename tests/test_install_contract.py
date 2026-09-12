@@ -131,7 +131,8 @@ def test_success_message_points_at_pi_list_when_launchers_exist(setup):
     (gen / "pi-launchers.zsh").write_text("pi-list() { :; }\n")
     r = _install(setup)
     assert r.returncode == 0
-    assert "pi-list" in r.stdout and "pi-sonnet" in r.stdout
+    assert "pi-list" in r.stdout and "pi-sonnet" not in r.stdout
+    assert "after a gateway alias catalog is configured" in r.stdout
 
 
 def test_missing_pi_cli_stops_before_any_work(setup):

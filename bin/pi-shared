@@ -242,8 +242,17 @@ def setup(args):
     state = {"version": 1, "status": "incomplete", "code_root": str(code_root),
              "modules": modules, "agent_dir": agent_dir,
              "mode": args.mode, "omlx": args.omlx, "omlx_url": args.omlx_url}
-    write_state(state)
     env = {**os.environ, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
+    env.setdefault("PI_SHARED_BOOTSTRAP_LAUNCHERS", "1")
+    # Fresh public setups include direct helpers. Preserve existing generated
+    # selections and explicit canonical/legacy opt-outs on every rerun.
+    launchers = Path(env.get("PI_SHARED_LAUNCHERS_OUT", str(Path.home() / ".pi/generated/pi-launchers.zsh"))).expanduser()
+    legacy = Path.home() / ".pi/model-gateway/pi-launchers.zsh"
+    preference = env.get("PI_SHARED_DIRECT_LAUNCHERS", env.get("PI_SHARED_LS99_EXTRAS", ""))
+    if not preference and not any(p.exists() or p.is_symlink() for p in (launchers, legacy)):
+        env["PI_SHARED_DIRECT_LAUNCHERS"] = "1"
+    state["bootstrap_launchers"] = env["PI_SHARED_BOOTSTRAP_LAUNCHERS"] == "1"
+    write_state(state)
     run([ROOT / "install.sh", *flags], env=env)
     if args.omlx == "install":
         run(["brew", "tap", "jundot/omlx", "https://github.com/jundot/omlx"])
@@ -283,12 +292,14 @@ def status():
             or any(not isinstance(m, str) or m not in MODULES for m in data["modules"])
             or not isinstance(data.get("code_root"), str) or not Path(data["code_root"]).is_absolute()
             or not isinstance(data.get("agent_dir"), str) or not Path(data["agent_dir"]).is_absolute()
+            or ("bootstrap_launchers" in data and not isinstance(data["bootstrap_launchers"], bool))
             or data.get("status") not in {"incomplete", "module-checks-passed"}):
         raise RuntimeError("Invalid setup receipt; rerun setup after reviewing configuration.")
     if data["status"] == "incomplete":
         raise RuntimeError("Previous setup did not complete; rerun its plan to repair. Completed installs were not rolled back.")
     print("Checking last selected modules only; provider/model/recovery readiness is not implied.", flush=True)
-    env = {**os.environ, "PI_SETUP_CODE_ROOT": data["code_root"], "PI_CODING_AGENT_DIR": data["agent_dir"]}
+    env = {**os.environ, "PI_SETUP_CODE_ROOT": data["code_root"], "PI_CODING_AGENT_DIR": data["agent_dir"],
+           "PI_SHARED_BOOTSTRAP_LAUNCHERS": "1" if data.get("bootstrap_launchers") is True else "0"}
     run([ROOT / "bin/doctor", *[arg for m in data["modules"] for arg in ("--module", m)]], env=env)
     if data.get("omlx"):
         print("oMLX is separately managed; status does not test its service or model inference.")
@@ -297,7 +308,7 @@ def status():
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.1")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.2")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["cloud", "local", "both", "later"])

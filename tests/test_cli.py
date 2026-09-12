@@ -33,6 +33,8 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("PI_SETUP_CODE_ROOT", raising=False)
     monkeypatch.delenv("PI_SHARED_AGENT_DIR", raising=False)
+    for name in ("PI_SHARED_BOOTSTRAP_LAUNCHERS", "PI_SHARED_DIRECT_LAUNCHERS", "PI_SHARED_LS99_EXTRAS", "PI_SHARED_LAUNCHERS_OUT"):
+        monkeypatch.delenv(name, raising=False)
     monkeypatch.setattr(cli.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(cli.shutil, "which", lambda name: "/fake/bin/" + name)
     monkeypatch.setattr(sys, "stdin", io.StringIO())
@@ -76,6 +78,30 @@ def test_selected_modules_and_receipt(isolated, mode, expected):
     assert stat.S_IMODE(cli.state_path().stat().st_mode) == 0o600
     assert len(calls) == 1
     assert calls[0][0] == [str(ROOT / "install.sh"), "--minimal", *[f"--with-{m}" for m in expected[1:]]]
+
+
+def test_fresh_setup_enables_management_and_direct_launchers(isolated):
+    cli.setup(options())
+    env = isolated[1][0][1]["env"]
+    assert env["PI_SHARED_BOOTSTRAP_LAUNCHERS"] == "1"
+    assert env["PI_SHARED_DIRECT_LAUNCHERS"] == "1"
+    assert json.loads(cli.state_path().read_text())["bootstrap_launchers"] is True
+    cli.status()
+    assert isolated[1][-1][1]["env"]["PI_SHARED_BOOTSTRAP_LAUNCHERS"] == "1"
+
+
+@pytest.mark.parametrize("choice", ["existing", "legacy", "canonical-opt-out", "legacy-opt-out"])
+def test_setup_preserves_launcher_preferences(isolated, monkeypatch, choice):
+    if choice in {"existing", "legacy"}:
+        suffix = "generated/pi-launchers.zsh" if choice == "existing" else "model-gateway/pi-launchers.zsh"
+        path = isolated[0] / ".pi" / suffix
+        path.parent.mkdir(parents=True)
+        path.write_text("existing choices")
+    else:
+        monkeypatch.setenv("PI_SHARED_DIRECT_LAUNCHERS" if choice == "canonical-opt-out" else "PI_SHARED_LS99_EXTRAS", "0")
+    cli.setup(options())
+    env = isolated[1][0][1]["env"]
+    assert env.get("PI_SHARED_DIRECT_LAUNCHERS") != "1"
 
 
 def test_search_update_flags_and_custom_root(isolated, monkeypatch):
