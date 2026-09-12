@@ -59,6 +59,8 @@ def setup(tmp_path):
     origin = tmp_path / "shared-origin"
     origin.mkdir()
     _exe(origin / "install.sh", "#!/bin/sh\nexit 0\n")
+    (origin / "bin").mkdir()
+    _exe(origin / "bin/pi-launchers-refresh", '#!/bin/sh\necho refreshed > "$HOME/refreshed"\n')
     _git(fx, origin, "init", "-q", "-b", "main")
     _git(fx, origin, "add", ".")
     _git(fx, origin, "commit", "-qm", "fixture")
@@ -267,6 +269,49 @@ def test_browser_checkout_local_work_is_protected_before_client_configuration(se
     assert private.read_text() == "preserve me"
     assert not (setup["home"] / "browser-installed").exists()
     assert not (setup["home"] / ".pi/research/config.json").exists()
+
+
+def test_unchanged_service_is_verified_without_reinstall_or_restart(setup):
+    worker = _browser_module(setup)
+    assert _install(setup).returncode == 0
+    (setup["home"] / "browser-installed").unlink()
+    revision = _git(setup, worker, "rev-parse", "HEAD")
+    result = _install(setup, "--update-changed", "--only", "pi-shared,browser-worker",
+                      PI_SETUP_INSTALLED_REVISIONS=json.dumps({"browser-worker": revision}))
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "not restarting" in result.stdout
+    assert not (setup["home"] / "browser-installed").exists()
+    assert (setup["home"] / "refreshed").exists()
+    assert "--module browser-worker" in (setup["home"] / "doctor-args").read_text()
+
+
+def test_exclusive_updates_do_not_select_recommended_modules(setup):
+    _browser_module(setup)
+    result = _install(setup, "--update-changed", "--only", "pi-shared")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert not (setup["home"] / "browser-installed").exists()
+    assert (setup["home"] / "doctor-args").read_text().strip() == "--module pi-shared"
+
+
+def test_failed_apply_is_retried_even_when_checkout_already_advanced(setup):
+    worker = _browser_module(setup)
+    old = _git(setup, worker, "rev-parse", "HEAD")
+    (worker / "new-code").write_text("changed")
+    _git(setup, worker, "add", ".")
+    _git(setup, worker, "commit", "-qm", "next")
+    _git(setup, worker, "push", "-q", "origin", "main")
+    flags = ["--update-changed", "--only", "pi-shared,browser-worker"]
+    receipt = json.dumps({"browser-worker": old})
+    assert _install(setup, *flags, PI_SETUP_INSTALLED_REVISIONS=receipt, BROWSER_INSTALL_FAIL="1").returncode != 0
+    result = _install(setup, *flags, PI_SETUP_INSTALLED_REVISIONS=receipt)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (setup["home"] / "browser-installed").exists()
+
+
+def test_bad_exclusive_selection_fails_before_module_installation(setup):
+    result = _install(setup, "--update-changed", "--only", "pi-shared,typo")
+    assert result.returncode != 0
+    assert not (setup["home"] / "doctor-args").exists()
 
 
 def test_shell_override_and_commented_source_do_not_execute_rc(setup):

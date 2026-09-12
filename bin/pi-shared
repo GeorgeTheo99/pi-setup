@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+import fcntl
 import http.client
 import json
 import os
 from pathlib import Path
 import platform
+import re
 import shlex
 import shutil
 import socket
@@ -21,6 +24,10 @@ import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lib"))
+import update_support
+
+FORMULA = "georgetheo99/tap/pi-shared"
 MODULES = {"pi-shared", "model-gateway", "browser-worker", "local_web_search"}
 OMLX_FORMULA = "jundot/omlx/omlx"
 OMLX_GUIDE = "https://github.com/jundot/omlx#installation"
@@ -92,7 +99,7 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         raise RuntimeError("oMLX redirected the request; automatic redirects are disabled.")
 
 
-def discover_models(url):
+def discover_models(url, allow_auth_required=False):
     # Explicit numeric loopback, no proxies, redirects, credentials or model calls.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
     try:
@@ -107,6 +114,9 @@ def discover_models(url):
         if any(not isinstance(m, dict) or not isinstance(m.get("id"), str) or not m["id"] for m in models):
             raise ValueError
     except urllib.error.HTTPError as exc:
+        if allow_auth_required and exc.code in {401, 403}:
+            print("oMLX endpoint responds and requires authentication; model readiness is not tested.")
+            return
         raise RuntimeError(f"oMLX discovery returned HTTP {exc.code}; configure authentication manually if required.") from None
     except (ValueError, OSError, http.client.HTTPException) as exc:
         raise RuntimeError("Could not read a valid oMLX model listing; check URL, service and authentication.") from exc
@@ -115,6 +125,24 @@ def discover_models(url):
         print("  " + json.dumps(model["id"], ensure_ascii=True))
     if not models:
         print("No models installed. Review download size and memory needs in oMLX /admin before downloading.")
+
+
+def wait_omlx(url, allow_auth_required=False):
+    # launchd start/restart is asynchronous. Retry within a bounded window,
+    # rather than restarting again merely because the first connection raced.
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            if allow_auth_required:
+                discover_models(url, allow_auth_required=True)
+            else:
+                discover_models(url)
+            return
+        except RuntimeError:
+            if time.monotonic() >= deadline:
+                raise RuntimeError("oMLX startup discovery failed; inspect brew services info omlx. "
+                                   "Its service was not stopped. Check the configured URL before retrying.") from None
+            time.sleep(2)
 
 
 def state_path():
@@ -238,8 +266,13 @@ def setup(args):
         if input("Apply this plan? [y/N] ").strip().lower() not in {"y", "yes"}:
             print("Cancelled; no installation changes made.")
             return 0
+    with update_lock():
+        return apply_setup(args, code_root, modules, flags)
+
+
+def apply_setup(args, code_root, modules, flags):
     agent_dir = str(Path(os.environ.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve())
-    state = {"version": 1, "status": "incomplete", "code_root": str(code_root),
+    state = {"version": 2, "status": "incomplete", "code_root": str(code_root),
              "modules": modules, "agent_dir": agent_dir,
              "mode": args.mode, "omlx": args.omlx, "omlx_url": args.omlx_url}
     env = {**os.environ, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
@@ -252,6 +285,11 @@ def setup(args):
     if not preference and not any(p.exists() or p.is_symlink() for p in (launchers, legacy)):
         env["PI_SHARED_DIRECT_LAUNCHERS"] = "1"
     state["bootstrap_launchers"] = env["PI_SHARED_BOOTSTRAP_LAUNCHERS"] == "1"
+    state["settings"] = update_support.remember_settings(env)
+    env.update(state["settings"])
+    state["launchers_file"] = str(launchers.resolve())
+    state["recovery"] = args.recovery
+    state["operation"] = "setup"
     write_state(state)
     run([ROOT / "install.sh", *flags], env=env)
     if args.omlx == "install":
@@ -259,19 +297,16 @@ def setup(args):
         run(["brew", "install", OMLX_FORMULA])
         run(["brew", "services", "start", OMLX_FORMULA])
         print("Waiting up to 60 seconds for oMLX model discovery (not inference)...", flush=True)
-        deadline = time.monotonic() + 60
-        while True:
-            try:
-                discover_models("http://127.0.0.1:8000/v1")
-                break
-            except RuntimeError:
-                if time.monotonic() >= deadline:
-                    raise RuntimeError("oMLX startup discovery failed; inspect brew services info omlx. "
-                                       "Its service was not stopped. Retry with --omlx existing --omlx-url http://127.0.0.1:8000/v1.") from None
-                time.sleep(2)
+        wait_omlx("http://127.0.0.1:8000/v1")
         print("oMLX model listing responds; model readiness not tested. Manage models at http://127.0.0.1:8000/admin.")
     elif args.omlx == "existing":
         discover_models(args.omlx_url)
+    if args.omlx == "install":
+        state["omlx_version"] = update_support.omlx_version()
+    state["launcher_refresh"] = state["bootstrap_launchers"] or launchers.is_file()
+    state["runtime_versions"] = update_support.runtime_versions()
+    state["revisions"] = update_support.revisions(code_root, modules)
+    state["services"] = update_support.service_snapshot(modules, state["settings"], args.omlx)
     state["status"] = "module-checks-passed"
     write_state(state)
     print("Selected module checks passed. Authentication, local routing, inference and recovery readiness are separate.")
@@ -279,15 +314,15 @@ def setup(args):
     return 0
 
 
-def status():
+def read_state(allow_incomplete=False):
     path = state_path()
     if not path.is_file() or path.is_symlink():
         raise RuntimeError("No safe setup receipt found. Run pi-shared setup; source-only users can use bin/doctor.")
     info = path.stat()
-    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+    if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077 or info.st_nlink != 1 or info.st_size > 65536:
         raise RuntimeError("Setup receipt must be owned by you with mode 0600.")
     data = json.loads(path.read_text())
-    if (not isinstance(data, dict) or data.get("version") != 1
+    if (not isinstance(data, dict) or data.get("version") not in (1, 2)
             or not isinstance(data.get("modules"), list) or not data["modules"]
             or any(not isinstance(m, str) or m not in MODULES for m in data["modules"])
             or not isinstance(data.get("code_root"), str) or not Path(data["code_root"]).is_absolute()
@@ -295,8 +330,35 @@ def status():
             or ("bootstrap_launchers" in data and not isinstance(data["bootstrap_launchers"], bool))
             or data.get("status") not in {"incomplete", "module-checks-passed"}):
         raise RuntimeError("Invalid setup receipt; rerun setup after reviewing configuration.")
-    if data["status"] == "incomplete":
+    if data.get("version") == 2:
+        settings = data.get("settings")
+        if (not isinstance(settings, dict) or any(k not in update_support.SETTINGS or not isinstance(v, str) for k, v in settings.items())
+                or not isinstance(data.get("launchers_file"), str) or not Path(data["launchers_file"]).is_absolute()
+                or not isinstance(data.get("revisions", {}), dict) or not isinstance(data.get("services", {}), dict)):
+            raise RuntimeError("Invalid remembered update settings")
+        if update_support.remember_settings(settings) != settings:
+            raise RuntimeError("Remembered paths must be absolute and normalized")
+        if "omlx_version" in data and (not isinstance(data["omlx_version"], str) or not data["omlx_version"] or len(data["omlx_version"]) > 128):
+            raise RuntimeError("Invalid applied oMLX version")
+        for name, service in data.get("services", {}).items():
+            if (name not in (*data["modules"], "omlx") or not isinstance(service, dict)
+                    or set(service) != {"path", "identity"} or not isinstance(service["path"], str)
+                    or not Path(service["path"]).is_absolute() or not isinstance(service["identity"], str)
+                    or not re.fullmatch(r"[0-9a-f]{64}", service["identity"])):
+                raise RuntimeError("Invalid saved service ownership")
+        if ("pi-shared" not in data["modules"] or len(set(data["modules"])) != len(data["modules"])
+                or data.get("omlx") not in (None, "existing", "guide", "install")
+                or any(not isinstance(k, str) or k not in data["modules"] or not isinstance(v, str)
+                       or len(v) != 40 or any(c not in "0123456789abcdef" for c in v)
+                       for k, v in data.get("revisions", {}).items())):
+            raise RuntimeError("Invalid update selection/revisions")
+    if data["status"] == "incomplete" and not allow_incomplete:
         raise RuntimeError("Previous setup did not complete; rerun its plan to repair. Completed installs were not rolled back.")
+    return data
+
+
+def status():
+    data = read_state()
     print("Checking last selected modules only; provider/model/recovery readiness is not implied.", flush=True)
     env = {**os.environ, "PI_SETUP_CODE_ROOT": data["code_root"], "PI_CODING_AGENT_DIR": data["agent_dir"],
            "PI_SHARED_BOOTSTRAP_LAUNCHERS": "1" if data.get("bootstrap_launchers") is True else "0"}
@@ -306,9 +368,133 @@ def status():
     return 0
 
 
+@contextmanager
+def update_lock():
+    parent = state_path().parent
+    for directory in (Path.home() / ".config", parent):
+        if directory.is_symlink():
+            raise RuntimeError("Unsafe symlinked update lock directory")
+        directory.mkdir(mode=0o700, exist_ok=True)
+        if directory.stat().st_uid != os.getuid() or directory.stat().st_mode & 0o022:
+            raise RuntimeError("Unsafe update lock directory")
+    path = parent / "update.lock"
+    inherited = os.environ.pop("PI_SHARED_UPDATE_LOCK_FD", None)
+    if inherited and (not inherited.isdecimal() or len(inherited) > 9):
+        raise RuntimeError("Invalid inherited update lock descriptor")
+    fd = int(inherited) if inherited else os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        info = os.fstat(fd)
+        target = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1
+                or info.st_mode & 0o077 or (info.st_dev, info.st_ino) != (target.st_dev, target.st_ino)):
+            raise RuntimeError("Unsafe update lock")
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("Another setup/update is running; try again after it finishes") from None
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def update(args):
+    data = read_state(allow_incomplete=True)
+    if data["version"] != 2:
+        raise RuntimeError("This older receipt did not record all choices. Run setup once with this version; future updates need no questionnaire.")
+    if data["status"] == "incomplete" and data.get("operation") != "update":
+        raise RuntimeError("Initial setup is incomplete; finish setup before updating")
+    print("Update plan: retain saved modules, paths, models and preferences.")
+    print("  Selected: " + ", ".join(data["modules"]))
+    if data.get("omlx") == "install":
+        print("  Also update owned Homebrew oMLX; restart it only if its installed version changes.")
+    print("  Update owned CLI/runtime; apply changed selected services; refresh dependencies/shortcuts; verify.")
+    print("  No LLM model downloads or provider calls. Affected services may restart; failed steps are not rolled back.")
+    if args.plan:
+        return 0
+    if platform.system() != "Darwin":
+        raise RuntimeError("Updates currently support macOS only")
+    with update_lock() as fd:
+        # Re-read after locking. Always use saved selection, not calling-shell overrides.
+        data = read_state(allow_incomplete=True)
+        if data["version"] != 2 or (data["status"] == "incomplete" and data.get("operation") != "update"):
+            raise RuntimeError("Setup receipt changed; finish setup before updating")
+        service_env = update_support.service_environment(data)
+        omlx_url = update_support.omlx_url() if data.get("omlx") == "install" else None
+        retry_modules = data["status"] == "incomplete" and data.get("phase") == "modules"
+        data.update(status="incomplete", operation="update")
+        write_state(data)
+        if not args.modules_only:
+            # Keep a failed application retry distinct from the normal re-exec.
+            if not retry_modules:
+                data["phase"] = "package"
+                write_state(data)
+            marker = ROOT / "homebrew.json"
+            if marker.exists():
+                ownership = json.loads(marker.read_text())
+                formula = ownership.get("formula") if isinstance(ownership, dict) else None
+                if (not isinstance(formula, str) or not re.fullmatch(r"[a-z0-9_-]+/[a-z0-9_-]+/pi-shared", formula)
+                        or ownership != {"manager": "homebrew", "formula": formula}):
+                    raise RuntimeError("Invalid Homebrew ownership marker")
+                prefix = Path(subprocess.check_output(["brew", "--prefix", formula], text=True).strip())
+                if prefix.resolve() != ROOT.parent.resolve():
+                    raise RuntimeError("This CLI is not the installed Homebrew package; refusing to update a different installation")
+                launcher = prefix / "bin/pi-shared"
+                run(["brew", "update"])
+                # This checks existing HEAD installs without switching stable channels.
+                run(["brew", "upgrade", "--fetch-HEAD", formula])
+            else:
+                top = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"], text=True).strip()
+                dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=all"], text=True)
+                if Path(top).resolve() != ROOT.resolve() or dirty:
+                    raise RuntimeError("Source orchestrator must be a clean repository root")
+                run(["git", "-C", ROOT, "symbolic-ref", "-q", "HEAD"])
+                run(["git", "-C", ROOT, "rev-parse", "--verify", "@{upstream}"])
+                run(["git", "-C", ROOT, "pull", "--ff-only"])
+                launcher = ROOT / "bin/pi-shared"
+            os.set_inheritable(fd, True)
+            env = {**os.environ, "PI_SHARED_UPDATE_LOCK_FD": str(fd)}
+            os.execve(launcher, [str(launcher), "update", "--modules-only"], env)
+            return 0
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT"))}
+        env.update(data["settings"])
+        env.update(service_env)
+        env.update(PI_SETUP_CODE_ROOT=data["code_root"], PI_SHARED_AGENT_DIR=data["agent_dir"],
+                   PI_SHARED_BOOTSTRAP_LAUNCHERS="1" if data.get("bootstrap_launchers") else "0",
+                   PI_SHARED_LAUNCHERS_OUT=data["launchers_file"],
+                   PI_SETUP_REFRESH_LAUNCHERS="1" if data.get("launcher_refresh", True) else "0",
+                   PI_SETUP_INSTALLED_REVISIONS=json.dumps(data.get("revisions", {})
+                       if not retry_modules and data.get("runtime_versions") == update_support.runtime_versions() else {}))
+        data.update(status="incomplete", operation="update", phase="modules")
+        write_state(data)
+        if data.get("omlx") == "install":
+            update_support.omlx_version()  # refuse a missing installation before upgrade
+            run(["brew", "upgrade", "--fetch-HEAD", OMLX_FORMULA])
+            after = update_support.omlx_version()
+            if data.get("omlx_version") != after:
+                # Compare to the last successfully applied version, not this
+                # invocation's pre-upgrade package: a failed restart must retry.
+                run(["brew", "services", "restart", OMLX_FORMULA])
+            wait_omlx(omlx_url, allow_auth_required=True)
+            owned = update_support.service_snapshot([], data["settings"], "install").get("omlx")
+            if not owned:
+                raise RuntimeError("oMLX ownership metadata is missing after update")
+            data["omlx_version"] = after
+            data["services"]["omlx"] = owned
+            write_state(data)
+        run([ROOT / "install.sh", "--update-changed", "--only", ",".join(data["modules"])], env=env)
+        data["runtime_versions"] = update_support.runtime_versions()
+        data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])
+        data["services"] = update_support.service_snapshot(data["modules"], data["settings"], data.get("omlx"))
+        data["status"] = "module-checks-passed"
+        data["phase"] = "verified"
+        write_state(data)
+    print("Update verified. Generated commands refresh at the next interactive prompt; no manual pi-regen needed.")
+    return 0
+
+
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.2")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.3")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["cloud", "local", "both", "later"])
@@ -321,10 +507,15 @@ def main():
     p.add_argument("--update", action="store_true", help="Explicitly fetch/update selected writable module checkouts")
     p.add_argument("--yes", action="store_true", help="Apply explicit choices without prompting; never download LLM weights")
     p.add_argument("--plan", action="store_true", help="Show plan without commands, downloads, network or file changes")
+    u = commands.add_parser("update", help="Update the saved installation; no repeated setup questionnaire")
+    u.add_argument("--plan", action="store_true", help="Read-only saved update plan")
+    u.add_argument("--modules-only", action="store_true", help="Update selected modules without upgrading the owning CLI/runtime")
     commands.add_parser("status", help="Run doctor for the last successfully selected modules (executes trusted extension checks)")
     args = parser.parse_args()
     try:
-        return setup(args) if args.command == "setup" else status()
+        if args.command == "setup":
+            return setup(args)
+        return update(args) if args.command == "update" else status()
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled; completed actions, if any, were not rolled back.", file=sys.stderr)
         return 130

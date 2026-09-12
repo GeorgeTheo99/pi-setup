@@ -40,6 +40,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "stdin", io.StringIO())
     calls = []
     monkeypatch.setattr(cli, "run", lambda args, **kw: calls.append((list(map(str, args)), kw)))
+    monkeypatch.setattr(cli.update_support, "omlx_version", lambda: "fixture-omlx")
     return home, calls
 
 

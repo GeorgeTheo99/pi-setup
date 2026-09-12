@@ -28,6 +28,8 @@ MANIFEST="$SETUP_DIR/manifest.yaml"
 
 MINIMAL=0
 UPDATE=0
+UPDATE_CHANGED=0
+ONLY_MODULES=""
 BROWSER_WORKER_INSTALLED=0
 declare -a WITH_MODULES=()
 declare -a OVERLAYS=()
@@ -37,6 +39,8 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --minimal) MINIMAL=1 ;;
     --update) UPDATE=1 ;;
+    --update-changed) UPDATE=1; UPDATE_CHANGED=1 ;;
+    --only) shift; ONLY_MODULES="${1:?--only requires comma-separated module names}" ;;
     --with-*) WITH_MODULES+=("${1#--with-}") ;;
     --overlay) shift; OVERLAYS+=("${1:?--overlay requires a value}") ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
@@ -100,6 +104,9 @@ PY
 
 wants_module() {
   local tier="$1" name="$2"
+  if [ -n "$ONLY_MODULES" ]; then
+    case ",$ONLY_MODULES," in *",$name,"*) return 0 ;; *) return 1 ;; esac
+  fi
   case "$tier" in
     required) return 0 ;;
     recommended) [ "$MINIMAL" -eq 0 ] && return 0 ;;
@@ -182,8 +189,27 @@ install_module() {
   local dest="$CODE_ROOT/$name"
   checkout_repo "$repo" "$dest" "$ref"
   [ -x "$dest/install.sh" ] || die "$name has no executable install.sh; installation incomplete"
+  if [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" != pi-shared ]; then
+    local installed revision
+    installed="$(python3 - "$name" <<'PY'
+import json, os, sys
+print(json.loads(os.environ.get('PI_SETUP_INSTALLED_REVISIONS', '{}')).get(sys.argv[1], ''))
+PY
+)" || die "Invalid installed revision receipt"
+    revision="$(git -C "$dest" rev-parse HEAD)"
+    if [ "$installed" = "$revision" ]; then
+      log "$name unchanged since successful installation; not restarting"
+      DOCTOR_ARGS+=(--module "$name")
+      return 0
+    fi
+  fi
   log "Installing $name..."
-  (cd "$dest" && ./install.sh) || die "$name installer failed"
+  if [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" = pi-shared ]; then
+    # Keep the current launcher metadata/profile selection for the final refresh.
+    (cd "$dest" && ./install.sh --no-catalog) || die "$name installer failed"
+  else
+    (cd "$dest" && ./install.sh) || die "$name installer failed"
+  fi
   [ "$name" != browser-worker ] || BROWSER_WORKER_INSTALLED=1
   DOCTOR_ARGS+=(--module "$name")
 }
@@ -265,10 +291,18 @@ PY
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+rows="$(parse_manifest "$MANIFEST")" || die "Invalid module manifest"
+if [ -n "$ONLY_MODULES" ]; then
+  python3 - "$ONLY_MODULES" "$rows" <<'PY' || die "Invalid exclusive module selection"
+import sys
+names = sys.argv[1].split(',')
+known = {row.split('\t')[0] for row in sys.argv[2].splitlines()}
+if not names or len(names) != len(set(names)) or any(name not in known for name in names):
+    raise SystemExit(1)
+PY
+fi
 mkdir -p "$CODE_ROOT"
 log "Modules root: $CODE_ROOT"
-
-rows="$(parse_manifest "$MANIFEST")" || die "Invalid module manifest"
 while IFS=$'\t' read -r name repo ref tier; do
   [ -n "$name" ] || continue
   if wants_module "$tier" "$name"; then
@@ -290,6 +324,12 @@ if [ "$BROWSER_WORKER_INSTALLED" -eq 1 ]; then
 fi
 
 install_shell_rc
+
+if [ "$UPDATE_CHANGED" -eq 1 ] && [ "${PI_SETUP_REFRESH_LAUNCHERS:-1}" = 1 ]; then
+  # Regenerate from the saved generated metadata, not reset endpoint/model choices.
+  "$CODE_ROOT/pi-shared/bin/pi-launchers-refresh" --launcher "${PI_SHARED_LAUNCHERS_OUT:-$LAUNCHERS}" \
+    || die "Launcher refresh failed; selected module updates were not rolled back"
+fi
 
 log "Running doctor..."
 # pi-shared installs into PI_SHARED_AGENT_DIR (default ~/.pi/agent), not the

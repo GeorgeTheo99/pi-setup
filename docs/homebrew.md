@@ -73,9 +73,11 @@ not stop or uninstall an earlier selection.
 
 Open a new shell after setup and run `pi-list`. Fresh setups include `pi-list`,
 `pi-regen`, `pi-shared-update`, `pi-restart`, `pi-default`, and `pi-openai` without
-requiring a gateway catalog. Sourcing the launcher only defines commands and
-appends `~/.local/bin` to PATH once; it does not repair profiles, contact models,
-or start services. Existing generated direct-launcher choices and explicit
+requiring a gateway catalog. Sourcing defines commands, appends `~/.local/bin` to PATH once and registers
+an interactive local-file refresh hook. It never upgrades software, contacts
+models or starts services. Changed catalog/launcher data refreshes at the next
+prompt; manually edited model outputs require reconciliation rather than being
+overwritten. Existing generated direct-launcher choices and explicit
 `PI_SHARED_DIRECT_LAUNCHERS=0` opt-outs survive reruns.
 
 Until the alias export is configured, `pi-list` says so and no placeholder
@@ -168,6 +170,13 @@ verify an actual tool call. A doctor exit code alone is insufficient if it says
 the model test was skipped. Offline recovery is not ready until those checks pass.
 
 ## Status, upgrades and uninstall
+
+Use **`pi-shared update`** for routine updates of the complete saved selection.
+It wraps the owning Homebrew package upgrade, re-executes the new CLI, updates
+selected modules/dependencies, regenerates commands and verifies the result.
+See [one-command updates](updates.md) for receipt migration, ownership checks,
+unchanged-service behavior, automatic prompt refresh and failure boundaries.
+The lower-level commands below remain available for explicit partial operations.
 
 `~/.config/pi-shared/setup.json` is an owner-only receipt recording the selected
 module root, profile and modules, not credentials. It is marked incomplete before

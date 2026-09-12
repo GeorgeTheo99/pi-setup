@@ -29,6 +29,13 @@ new shell after setup. `pi-list` explains the unconfigured state; model shortcut
 appear after configuring the gateway alias export and running `pi-regen`.
 Existing direct-launcher choices and explicit opt-outs are preserved.
 
+Routine maintenance is now `pi-shared update`: it remembers the selected setup,
+updates its owning package/source and selected modules, refreshes dependencies
+and shortcuts, and verifies the result. `pi-shared update --plan` is read-only.
+Interactive zsh prompts automatically refresh changed local catalog/launcher
+data—never software, services, or models. See [update ownership and safety](docs/updates.md),
+including the one-time setup capture required for older receipts.
+
 Homebrew installs Node, Python, uv, Git and a pinned, lockfile-backed Pi runtime.
 It does **not** run setup, start services, modify Pi profiles, or download LLM
 weights during package installation. `setup` explicitly delegates to the same
