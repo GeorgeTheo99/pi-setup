@@ -10,12 +10,12 @@ A successful check is not proof that provider authentication or inference works.
 
 The public command is **`pi-shared`**; this repository owns its orchestration.
 The companion `homebrew-tap` repository owns the formula, not another installer.
-See [Homebrew setup](docs/homebrew.md) for the staged distribution, local testing,
-service ownership, and release gate. The tap is not published by these changes.
-
-After installing a published formula, the intended workflow is:
+See [Homebrew setup](docs/homebrew.md) for installation, local testing,
+service ownership, and the release gate. The tap is
+[GeorgeTheo99/homebrew-tap](https://github.com/GeorgeTheo99/homebrew-tap).
 
 ```bash
+brew install GeorgeTheo99/tap/pi-shared
 pi-shared setup                         # interactive choices and final approval
 pi-shared setup --mode cloud --plan     # read-only preview; no downloads or commands
 pi-shared setup --local                 # opt into oMLX options, now or later

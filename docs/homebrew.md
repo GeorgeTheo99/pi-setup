@@ -2,16 +2,16 @@
 
 `pi-shared` is the public package and command name. `pi-setup` remains the source
 of installation orchestration; `pi-shared` remains the independent shared-resource
-repository. The companion `GeorgeTheo99/homebrew-tap` is the proposed formula
-repository. **Publication is a separate approval/release step.** Do not advertise
-the install command as live before the source and tap have been published and a
-clean-Mac installation has passed.
+repository. The companion
+[`GeorgeTheo99/homebrew-tap`](https://github.com/GeorgeTheo99/homebrew-tap) owns
+stable source archive/checksum pins and the macOS Homebrew package CI.
+**Publication is a separate approval/release step.** Maintainers must publish
+source/tap refs and pass that CI before promoting a new package release.
 
 ## Installation contract
 
-The staged tap is HEAD-only until a real source release archive and its SHA-256
-are pinned. Development installation will require `--HEAD`; a stable release is
-intended to expose:
+The stable tap pins a source release archive and its SHA-256. Development
+installation adds `--HEAD`. For stable installation:
 
 ```bash
 brew install GeorgeTheo99/tap/pi-shared
