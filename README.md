@@ -14,14 +14,25 @@ See [Homebrew setup](docs/homebrew.md) for installation, local testing,
 service ownership, and the release gate. The tap is
 [GeorgeTheo99/homebrew-tap](https://github.com/GeorgeTheo99/homebrew-tap).
 
+Review [the formula](https://github.com/GeorgeTheo99/homebrew-tap/blob/main/Formula/pi-shared.rb)
+and its source before granting trust. The first command persistently trusts only
+this formula, including future revisions—not the entire tap. On older Homebrew
+versions without `brew trust`, omit that first command.
+
 ```bash
-brew install GeorgeTheo99/tap/pi-shared
+brew trust --formula georgetheo99/tap/pi-shared
+brew install georgetheo99/tap/pi-shared
 pi-shared setup                         # interactive choices and final approval
 pi-shared setup --mode cloud --plan     # read-only preview; no downloads or commands
 pi-shared setup --local                 # opt into oMLX options, now or later
 pi-shared status                        # selected module checks, not inference proof
 pi                                     # authenticate with /login and select /model
 ```
+
+If Homebrew reports an **untrusted tap** (possibly followed by “invalid syntax
+in tap”), review the formula and follow the
+[formula-scoped trust recovery](docs/homebrew.md#homebrew-trust-errors) before
+retrying installation. Do not disable trust checks globally.
 
 Fresh setup enables `pi-list`, `pi-regen`, `pi-shared-update`, `pi-restart`,
 `pi-default`, and `pi-openai` even before a gateway alias catalog exists. Open a

@@ -11,10 +11,15 @@ source/tap refs and pass that CI before promoting a new package release.
 ## Installation contract
 
 The stable tap pins a source release archive and its SHA-256. Development
-installation adds `--HEAD`. For stable installation:
+installation adds `--HEAD`. Review
+[the formula](https://github.com/GeorgeTheo99/homebrew-tap/blob/main/Formula/pi-shared.rb)
+and its source before granting trust. The first command persistently trusts only
+this formula, including future revisions—not the entire tap. On older Homebrew
+versions without `brew trust`, omit that first command. For stable installation:
 
 ```bash
-brew install GeorgeTheo99/tap/pi-shared
+brew trust --formula georgetheo99/tap/pi-shared
+brew install georgetheo99/tap/pi-shared
 pi-shared setup
 pi
 ```
@@ -34,6 +39,35 @@ The command can also run from a trusted source checkout without Homebrew:
 
 Source users must already have the prerequisites listed in the README. The
 Homebrew-owned Pi runtime is not installed by this source command.
+
+## Homebrew trust errors
+
+If installation refuses to load `georgetheo99/tap/pi-shared` from an untrusted
+tap, first review [the formula and its source](https://github.com/GeorgeTheo99/homebrew-tap/blob/main/Formula/pi-shared.rb).
+If you trust this package, explicitly trust only the formula and retry:
+
+```bash
+brew trust --formula georgetheo99/tap/pi-shared
+brew install georgetheo99/tap/pi-shared
+pi-shared setup
+```
+
+`brew trust --formula` accepts the fully qualified name before the tap exists;
+run it before retrying installation even if `brew tap` itself failed. A separate
+`brew tap` is unnecessary. This is persistent permission to load this formula,
+including future revisions, not a checksum verification or trust grant for the
+entire tap. Do not disable Homebrew's trust checks globally.
+
+On Homebrew 6.0.22, tap validation catches formula-load failures across simulated
+platforms. Trust rejections can therefore produce repeated `Invalid formula`
+messages followed by `Cannot tap georgetheo99/tap: invalid syntax in tap!`.
+When the preceding error is an untrusted-tap rejection, the final message is not
+evidence of invalid Ruby syntax or platform incompatibility. Failed tap
+validation may remove the newly cloned tap; formula-scoped trust can still be
+recorded before the next install attempt.
+
+If a different error remains after granting trust, investigate that error rather
+than trusting the whole tap.
 
 ## Setup choices
 
