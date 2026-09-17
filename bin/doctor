@@ -84,6 +84,8 @@ def main():
     parser.add_argument("--smoke-model", metavar="ALIAS")
     parser.add_argument("--require-catalog", action="store_true",
                         help="Require generated launchers/model profile even on a fresh direct-provider setup")
+    parser.add_argument("--require-omnigent", action="store_true",
+                        help="Check native-Pi prerequisites only; does not launch Omnigent or test inference")
     args = parser.parse_args()
     if "" in args.module or "" in args.overlay:
         parser.error("--module and --overlay require nonempty values")
@@ -94,6 +96,10 @@ def main():
                  or home / ".pi/agent").expanduser().resolve()
     shared = root / "pi-shared"
     doctor = Doctor()
+    if args.require_omnigent and agent != (home / ".pi/agent").resolve():
+        doctor.bad("Omnigent compatibility currently supports ~/.pi/agent only; "
+                   "rerun with PI_CODING_AGENT_DIR=$HOME/.pi/agent. No profile was changed.")
+        return 1
 
     def selected(name):
         return not args.module or name in args.module
@@ -145,7 +151,31 @@ def main():
                     doctor.ok("pi-shared declared runtime dependencies resolve")
                 else:
                     doctor.bad("pi-shared dependency resolution failed")
-                doctor.command([str(probe), "--agent-dir", str(agent), "--expect-package", str(shared)])
+                argv = [str(probe), "--agent-dir", str(agent), "--expect-package", str(shared)]
+                if args.require_omnigent:
+                    databricks = (root / "pi-databricks").resolve()
+                    if package_configured(settings, databricks):
+                        argv += ["--expect-package", str(databricks)]
+                        packages = json.loads(settings.read_text())["packages"]
+                        sources = [entry.get("source") if isinstance(entry, dict) else entry for entry in packages]
+                        paths = [(settings.parent / Path(source).expanduser()).resolve()
+                                 for source in sources if isinstance(source, str)]
+                        if paths.index(databricks) > paths.index(shared.resolve()):
+                            doctor.bad("pi-databricks must precede pi-shared in packages; "
+                                       "run the overlay wiring step only after reviewing the profile")
+                doctor.command(argv)
+
+    if args.require_omnigent:
+        for executable, flags in (("omnigent", ["--version"]), ("omnigent", ["pi", "--help"]), ("tmux", ["-V"])):
+            resolved = shutil.which(executable)
+            if not resolved:
+                doctor.bad(f"Omnigent compatibility requires {executable} on PATH; install it explicitly")
+            else:
+                doctor.command([resolved, *flags], timeout=20, require_output=True)
+        if not doctor.failed:
+            doctor.ok("Omnigent native-Pi prerequisites verified (standard profile and package imports)")
+        doctor.warn("Native launch, model routing, inference, and advanced Omnigent features NOT tested; "
+                    "see docs/omnigent-compatibility.md")
 
     # Module-owned verifiers honor persisted ports; no fixed HTTP /health fallback.
     gateway = root / "model-gateway"

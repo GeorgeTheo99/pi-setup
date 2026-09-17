@@ -80,6 +80,7 @@ git clone https://github.com/GeorgeTheo99/pi-setup.git ~/local_code/pi-setup
 cd ~/local_code/pi-setup
 
 ./install.sh --minimal                # pi-shared only; no local services
+./install.sh --with-omnigent          # also require native-Pi prerequisites (no session launch)
 # OR:
 ./install.sh                          # pi-shared + model-gateway + browser-worker
 ./install.sh --minimal --with-browser-worker # shared resources + rendered browsing
@@ -96,6 +97,21 @@ Optional shared tools still need their own prerequisites.
 `model-info.json` catalog when absent. A passing `/health` means only that the
 gateway process answers. Onboard a provider/model separately before expecting
 inference; see its README and `docs/provider-onboarding.md`.
+
+### Optional Omnigent compatibility
+
+The supported compatibility path is Omnigent's native Pi terminal with the
+standard `~/.pi/agent` profile and explicit Pi provider/model arguments:
+
+```bash
+omnigent pi --provider <pi-provider> --model <pi-model-id>
+```
+
+`--with-omnigent` adds prerequisite/package-import checks; it does not install
+Omnigent, launch sessions, select a server, rewrite profiles, or verify inference.
+Normal installations do not require or invoke Omnigent. See the
+[compatibility contract and isolated smoke test](docs/omnigent-compatibility.md)
+for the supported scope, limitations, and evidence required before publication.
 
 ### Add search (credential first)
 
@@ -137,6 +153,8 @@ Bare `pi` uses the active profile, not necessarily the generated catalog.
 bin/doctor                              # known modules present under code root
 bin/doctor --module pi-shared           # minimal composition only
 bin/doctor --require-catalog           # explicitly require generated model artifacts
+PI_CODING_AGENT_DIR="$HOME/.pi/agent" bin/doctor --module pi-shared --require-omnigent
+# Checks native-Pi prerequisites; does not start Omnigent or test inference.
 bin/doctor --overlay /path/to/overlay   # explicitly trust and run its doctor
 bin/doctor --smoke-model sonnet         # opt into one real completion via pi-sonnet
 ```

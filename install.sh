@@ -4,6 +4,7 @@
 # Usage:
 #   ./install.sh                            # required + recommended modules
 #   ./install.sh --minimal                  # required modules only
+#   ./install.sh --with-omnigent            # also require native-Pi prerequisites
 #   ./install.sh --with-local_web_search    # add an optional module
 #   ./install.sh --overlay <dir-or-git-url> # apply an overlay (extra modules + hooks)
 #   ./install.sh --update                   # fetch selected refs + re-run installers
@@ -31,6 +32,7 @@ UPDATE=0
 UPDATE_CHANGED=0
 ONLY_MODULES=""
 BROWSER_WORKER_INSTALLED=0
+REQUIRE_OMNIGENT=0
 declare -a WITH_MODULES=()
 declare -a OVERLAYS=()
 declare -a DOCTOR_ARGS=()
@@ -41,6 +43,7 @@ while [ $# -gt 0 ]; do
     --update) UPDATE=1 ;;
     --update-changed) UPDATE=1; UPDATE_CHANGED=1 ;;
     --only) shift; ONLY_MODULES="${1:?--only requires comma-separated module names}" ;;
+    --with-omnigent) REQUIRE_OMNIGENT=1 ;;
     --with-*) WITH_MODULES+=("${1#--with-}") ;;
     --overlay) shift; OVERLAYS+=("${1:?--overlay requires a value}") ;;
     -h|--help) sed -n '2,16p' "$0"; exit 0 ;;
@@ -332,12 +335,19 @@ if [ "$UPDATE_CHANGED" -eq 1 ] && [ "${PI_SETUP_REFRESH_LAUNCHERS:-1}" = 1 ]; th
 fi
 
 log "Running doctor..."
+if [ "$REQUIRE_OMNIGENT" -eq 1 ]; then
+  DOCTOR_ARGS+=(--require-omnigent)
+fi
 # pi-shared installs into PI_SHARED_AGENT_DIR (default ~/.pi/agent), not the
 # calling shell's PI_CODING_AGENT_DIR. Verify the profile we actually installed.
 PI_CODING_AGENT_DIR="${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}" \
   "$SETUP_DIR/bin/doctor" "${DOCTOR_ARGS[@]}" || die "Installation checks failed; install did not complete. Review diagnostics above (completed module installs were not rolled back)"
 
 log "Selected module checks passed (provider authentication/readiness is separate)."
+if [ "$REQUIRE_OMNIGENT" -eq 1 ]; then
+  log "Omnigent native-Pi prerequisites checked; native launch and inference were not tested."
+  log "Compatibility scope and explicit launch command: $SETUP_DIR/docs/omnigent-compatibility.md"
+fi
 if [ -s "$LAUNCHERS" ]; then
   log "Start a new shell and run \`pi-list\` to see available commands. Model launchers appear after a gateway alias catalog is configured."
   log "(Bare \`pi\` uses the active profile, not necessarily the generated model catalog.)"

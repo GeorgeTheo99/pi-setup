@@ -137,6 +137,21 @@ def test_success_message_points_at_pi_list_when_launchers_exist(setup):
     assert "after a gateway alias catalog is configured" in r.stdout
 
 
+def test_omnigent_flag_only_adds_prerequisite_check(setup):
+    result = _install(setup, "--with-omnigent")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert (setup["home"] / "doctor-args").read_text().strip() == "--module pi-shared --require-omnigent"
+    assert "native launch and inference were not tested" in result.stdout
+    assert "harness is ready" not in result.stdout
+
+
+def test_normal_install_does_not_add_omnigent_requirement(setup):
+    result = _install(setup)
+    assert result.returncode == 0
+    assert "omnigent" not in (setup["home"] / "doctor-args").read_text()
+    assert "Omnigent" not in result.stdout
+
+
 def test_missing_pi_cli_stops_before_any_work(setup):
     env = dict(setup["env"])
     (Path(env["PATH"]) / "pi").unlink()

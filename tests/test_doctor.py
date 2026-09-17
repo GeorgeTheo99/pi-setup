@@ -50,6 +50,78 @@ def test_stock_path_without_timeout_uses_explicit_probe(tmp_path):
     assert "--list-models" not in result.stdout
 
 
+def omnigent_fixture(env):
+    bin_dir = Path(env["PATH"].split(":")[0])
+    executable(bin_dir / "omnigent", '''
+case "$*" in
+  --version) echo "omnigent 0.test" ;;
+  "pi --help") echo "Launch Pi via native harness" ;;
+  *) echo MUST_NOT_LAUNCH_OMNIGENT; exit 97 ;;
+esac
+''')
+    executable(bin_dir / "tmux", 'test "$*" = -V || exit 97; echo "tmux 3.test"')
+
+
+def test_omnigent_opt_in_checks_prerequisites_without_launching(tmp_path):
+    env, _ = fixture(tmp_path)
+    omnigent_fixture(env)
+    result = run(env, "--module", "pi-shared", "--require-omnigent")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "native-Pi prerequisites verified" in result.stdout
+    assert "inference, and advanced Omnigent features NOT tested" in result.stdout
+    assert "MUST_NOT_LAUNCH" not in result.stdout
+
+
+def test_normal_doctor_does_not_require_or_invoke_omnigent(tmp_path):
+    env, _ = fixture(tmp_path)
+    executable(Path(env["PATH"].split(":")[0]) / "omnigent", 'echo MUST_NOT_INVOKE; exit 97')
+    result = run(env, "--module", "pi-shared")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "MUST_NOT_INVOKE" not in result.stdout
+    assert "Omnigent" not in result.stdout
+
+
+@pytest.mark.parametrize("missing", ["omnigent", "tmux"])
+def test_omnigent_missing_prerequisite_fails_without_success_claim(tmp_path, missing):
+    env, _ = fixture(tmp_path)
+    omnigent_fixture(env)
+    (Path(env["PATH"].split(":")[0]) / missing).unlink()
+    result = run(env, "--module", "pi-shared", "--require-omnigent")
+    assert result.returncode == 1
+    assert f"requires {missing} on PATH" in result.stdout
+    assert "prerequisites verified" not in result.stdout
+
+
+def test_omnigent_rejects_nonstandard_profile_without_rewriting_it(tmp_path):
+    env, _ = fixture(tmp_path)
+    profile = Path(env["HOME"]) / ".pi-omlx/agent"
+    profile.mkdir(parents=True)
+    settings = profile / "settings.json"
+    settings.write_text('{"defaultModel":"preserve"}')
+    result = run({**env, "PI_CODING_AGENT_DIR": str(profile)}, "--require-omnigent")
+    assert result.returncode == 1 and "supports ~/.pi/agent only" in result.stdout
+    assert settings.read_text() == '{"defaultModel":"preserve"}'
+
+
+@pytest.mark.parametrize("ordered", [True, False])
+def test_omnigent_requires_configured_overlay_loading_and_order(tmp_path, ordered):
+    env, helpers = fixture(tmp_path)
+    omnigent_fixture(env)
+    overlay = Path(env["PI_SETUP_CODE_ROOT"]) / "pi-databricks"
+    overlay.mkdir()
+    packages = [str(overlay), str(helpers.parent)]
+    if not ordered:
+        packages.reverse()
+    settings = Path(env["HOME"]) / ".pi/agent/settings.json"
+    settings.write_text(json.dumps({"packages": packages}))
+    result = run(env, "--module", "pi-shared", "--require-omnigent")
+    assert result.returncode == (0 if ordered else 1), result.stdout + result.stderr
+    assert f"--expect-package {overlay}" in result.stdout
+    if not ordered:
+        assert "must precede pi-shared" in result.stdout
+        assert "prerequisites verified" not in result.stdout
+
+
 def test_profile_failure_propagates_even_without_matching_error_text(tmp_path):
     env, _ = fixture(tmp_path)
     result = run({**env, "PROBE_RC": "42"})
