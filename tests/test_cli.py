@@ -22,7 +22,7 @@ loader.exec_module(cli)
 
 def options(**kwargs):
     values = dict(mode="later", local=False, omlx=None, omlx_url=None, recovery="skip",
-                  without_browser=True, with_search=False, update=False, yes=True, plan=False)
+                  without_browser=True, with_search=False, with_omnigent=False, update=False, yes=True, plan=False)
     return argparse.Namespace(**(values | kwargs))
 
 
@@ -79,6 +79,46 @@ def test_selected_modules_and_receipt(isolated, mode, expected):
     assert stat.S_IMODE(cli.state_path().stat().st_mode) == 0o600
     assert len(calls) == 1
     assert calls[0][0] == [str(ROOT / "install.sh"), "--minimal", *[f"--with-{m}" for m in expected[1:]]]
+
+
+def test_omnigent_setup_is_opt_in_and_remembered(isolated):
+    home, calls = isolated
+    assert cli.setup(options(with_omnigent=True)) == 0
+    assert "--with-omnigent" in calls[0][0]
+    assert cli.read_state()["omnigent"] is True
+    calls.clear()
+    cli.status()
+    assert "--require-omnigent" in calls[0][0]
+
+
+def test_omnigent_status_can_check_without_changing_saved_selection(isolated):
+    home, calls = isolated
+    assert cli.setup(options()) == 0
+    before = cli.state_path().read_bytes()
+    calls.clear()
+    cli.status(require_omnigent=True)
+    assert "--require-omnigent" in calls[0][0]
+    assert cli.state_path().read_bytes() == before
+
+
+def test_omnigent_custom_profile_fails_before_installation(isolated, monkeypatch):
+    home, calls = isolated
+    monkeypatch.setenv("PI_SHARED_AGENT_DIR", str(home / "alternate"))
+    with pytest.raises(RuntimeError, match="standard ~/.pi/agent"):
+        cli.setup(options(with_omnigent=True))
+    assert calls == [] and not cli.state_path().exists()
+
+
+def test_invalid_omnigent_receipt_flag_is_rejected(isolated):
+    home, calls = isolated
+    cli.setup(options())
+    data = cli.read_state()
+    data["omnigent"] = "true"
+    cli.write_state(data)
+    calls.clear()
+    with pytest.raises(RuntimeError, match="Invalid setup receipt"):
+        cli.status()
+    assert calls == []
 
 
 def test_fresh_setup_enables_management_and_direct_launchers(isolated):

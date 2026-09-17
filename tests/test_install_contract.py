@@ -145,6 +145,15 @@ def test_omnigent_flag_only_adds_prerequisite_check(setup):
     assert "harness is ready" not in result.stdout
 
 
+def test_source_omnigent_custom_profile_fails_before_installation(setup):
+    result = _install(setup, "--with-omnigent", PI_SHARED_AGENT_DIR=setup["home"] / "alternate")
+    assert result.returncode != 0
+    assert "standard ~/.pi/agent" in result.stderr
+    assert not Path(setup["env"]["PI_SETUP_CODE_ROOT"]).exists()
+    assert not (setup["home"] / ".zshrc").exists()
+    assert not (setup["home"] / "doctor-args").exists()
+
+
 def test_normal_install_does_not_add_omnigent_requirement(setup):
     result = _install(setup)
     assert result.returncode == 0

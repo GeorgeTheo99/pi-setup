@@ -235,6 +235,11 @@ def setup(args):
     flags += [f"--with-{m}" for m in modules[1:]]
     if args.update:
         flags.append("--update")
+    if args.with_omnigent:
+        agent_dir = Path(os.environ.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve()
+        if agent_dir != (Path.home() / ".pi/agent").resolve():
+            raise RuntimeError("Omnigent compatibility currently requires the standard ~/.pi/agent profile; no configuration was changed.")
+        flags.append("--with-omnigent")
     print("Setup plan (Homebrew installation alone does not run this):")
     print(f"  Modules: {', '.join(modules)}\n  Writable module root: {code_root}")
     print("  Install locked module dependencies, wire Pi profiles and ~/.zshrc, start selected services, run doctor.")
@@ -274,7 +279,8 @@ def apply_setup(args, code_root, modules, flags):
     agent_dir = str(Path(os.environ.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve())
     state = {"version": 2, "status": "incomplete", "code_root": str(code_root),
              "modules": modules, "agent_dir": agent_dir,
-             "mode": args.mode, "omlx": args.omlx, "omlx_url": args.omlx_url}
+             "mode": args.mode, "omlx": args.omlx, "omlx_url": args.omlx_url,
+             "omnigent": args.with_omnigent}
     env = {**os.environ, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
     env.setdefault("PI_SHARED_BOOTSTRAP_LAUNCHERS", "1")
     # Fresh public setups include direct helpers. Preserve existing generated
@@ -328,8 +334,11 @@ def read_state(allow_incomplete=False):
             or not isinstance(data.get("code_root"), str) or not Path(data["code_root"]).is_absolute()
             or not isinstance(data.get("agent_dir"), str) or not Path(data["agent_dir"]).is_absolute()
             or ("bootstrap_launchers" in data and not isinstance(data["bootstrap_launchers"], bool))
+            or ("omnigent" in data and not isinstance(data["omnigent"], bool))
             or data.get("status") not in {"incomplete", "module-checks-passed"}):
         raise RuntimeError("Invalid setup receipt; rerun setup after reviewing configuration.")
+    if data.get("omnigent", False) and Path(data["agent_dir"]).resolve() != (Path.home() / ".pi/agent").resolve():
+        raise RuntimeError("Omnigent compatibility currently requires the standard ~/.pi/agent profile")
     if data.get("version") == 2:
         settings = data.get("settings")
         if (not isinstance(settings, dict) or any(k not in update_support.SETTINGS or not isinstance(v, str) for k, v in settings.items())
@@ -357,12 +366,15 @@ def read_state(allow_incomplete=False):
     return data
 
 
-def status():
+def status(require_omnigent=False):
     data = read_state()
     print("Checking last selected modules only; provider/model/recovery readiness is not implied.", flush=True)
     env = {**os.environ, "PI_SETUP_CODE_ROOT": data["code_root"], "PI_CODING_AGENT_DIR": data["agent_dir"],
            "PI_SHARED_BOOTSTRAP_LAUNCHERS": "1" if data.get("bootstrap_launchers") is True else "0"}
-    run([ROOT / "bin/doctor", *[arg for m in data["modules"] for arg in ("--module", m)]], env=env)
+    command = [ROOT / "bin/doctor", *[arg for m in data["modules"] for arg in ("--module", m)]]
+    if require_omnigent or data.get("omnigent", False):
+        command.append("--require-omnigent")
+    run(command, env=env)
     if data.get("omlx"):
         print("oMLX is separately managed; status does not test its service or model inference.")
     return 0
@@ -481,7 +493,10 @@ def update(args):
             data["omlx_version"] = after
             data["services"]["omlx"] = owned
             write_state(data)
-        run([ROOT / "install.sh", "--update-changed", "--only", ",".join(data["modules"])], env=env)
+        command = [ROOT / "install.sh", "--update-changed", "--only", ",".join(data["modules"])]
+        if data.get("omnigent", False):
+            command.append("--with-omnigent")
+        run(command, env=env)
         data["runtime_versions"] = update_support.runtime_versions()
         data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])
         data["services"] = update_support.service_snapshot(data["modules"], data["settings"], data.get("omlx"))
@@ -494,7 +509,7 @@ def update(args):
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.3")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.4")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["cloud", "local", "both", "later"])
@@ -504,18 +519,20 @@ def main():
     p.add_argument("--recovery", choices=["skip", "guide"], help="Independent pi-fallback prototype; no automatic installation")
     p.add_argument("--without-browser", action="store_true", help="Do not select browser-worker/Chromium")
     p.add_argument("--with-search", action="store_true", help="Select search (pre-provision Brave key per module README first)")
+    p.add_argument("--with-omnigent", action="store_true", help="Require native-Pi prerequisites; no Omnigent install, session launch, or inference")
     p.add_argument("--update", action="store_true", help="Explicitly fetch/update selected writable module checkouts")
     p.add_argument("--yes", action="store_true", help="Apply explicit choices without prompting; never download LLM weights")
     p.add_argument("--plan", action="store_true", help="Show plan without commands, downloads, network or file changes")
     u = commands.add_parser("update", help="Update the saved installation; no repeated setup questionnaire")
     u.add_argument("--plan", action="store_true", help="Read-only saved update plan")
     u.add_argument("--modules-only", action="store_true", help="Update selected modules without upgrading the owning CLI/runtime")
-    commands.add_parser("status", help="Run doctor for the last successfully selected modules (executes trusted extension checks)")
+    s = commands.add_parser("status", help="Run doctor for the last successfully selected modules (executes trusted extension checks)")
+    s.add_argument("--require-omnigent", action="store_true", help="Also check native-Pi prerequisites without changing the saved selection")
     args = parser.parse_args()
     try:
         if args.command == "setup":
             return setup(args)
-        return update(args) if args.command == "update" else status()
+        return update(args) if args.command == "update" else status(args.require_omnigent)
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled; completed actions, if any, were not rolled back.", file=sys.stderr)
         return 130

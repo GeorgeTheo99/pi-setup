@@ -81,6 +81,23 @@ def test_update_uses_saved_selection_and_paths_not_calling_environment(saved, mo
     assert cli.read_state()["revisions"]["pi-shared"] == "b" * 40
 
 
+def test_update_preserves_omnigent_opt_in(saved):
+    home, calls, data = saved
+    data.update(omnigent=True, agent_dir=str(home / ".pi/agent"))
+    cli.write_state(data)
+    assert cli.update(args()) == 0
+    assert calls[0][0][-1] == "--with-omnigent"
+    assert cli.read_state()["omnigent"] is True
+
+
+def test_invalid_omnigent_profile_fails_before_updating(saved):
+    saved[2]["omnigent"] = True
+    cli.write_state(saved[2])
+    with pytest.raises(RuntimeError, match="standard ~/.pi/agent"):
+        cli.update(args())
+    assert not saved[1]
+
+
 def test_runtime_change_reapplies_selected_services(saved, monkeypatch):
     monkeypatch.setattr(cli.update_support, "runtime_versions", lambda: {"node": "new"})
     cli.update(args())

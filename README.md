@@ -107,6 +107,10 @@ standard `~/.pi/agent` profile and explicit Pi provider/model arguments:
 omnigent pi --provider <pi-provider> --model <pi-model-id>
 ```
 
+Public CLI: `pi-shared setup --mode cloud --with-omnigent` (use `--plan` first).
+Private adapter: `pi-databricks install --with-omnigent` (0.2.1+, with public
+pi-shared 0.1.4+). Source: `./install.sh --with-omnigent`.
+
 `--with-omnigent` adds prerequisite/package-import checks; it does not install
 Omnigent, launch sessions, select a server, rewrite profiles, or verify inference.
 Normal installations do not require or invoke Omnigent. See the

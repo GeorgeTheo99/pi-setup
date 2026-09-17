@@ -58,6 +58,14 @@ die()  { printf '\033[1;31m[pi-setup]\033[0m %s\n' "$*" >&2; exit 1; }
 
 command -v git >/dev/null || die "git is required"
 command -v python3 >/dev/null || die "python3 is required (used to parse manifest.yaml)"
+if [ "$REQUIRE_OMNIGENT" -eq 1 ]; then
+  python3 - "${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}" "$HOME/.pi/agent" <<'PY'
+from pathlib import Path
+import sys
+if Path(sys.argv[1]).expanduser().resolve() != Path(sys.argv[2]).resolve():
+    raise SystemExit("--with-omnigent requires the standard ~/.pi/agent profile; no configuration was changed.")
+PY
+fi
 command -v pi >/dev/null || die "the Pi CLI is not on PATH — install Pi first (see README prerequisites), then re-run"
 
 # ---------------------------------------------------------------------------

@@ -78,6 +78,18 @@ than trusting the whole tap.
 | Both | Cloud and local choices | Both sets of model configuration |
 | Later | Shared resources and browser-worker | Model/provider setup later |
 
+`--with-omnigent` optionally requires Omnigent native-Pi prerequisites and the
+standard Pi profile. It does not install Omnigent, launch its server/session, or
+run inference. The choice is saved for subsequent `update`/`status` checks;
+`pi-shared status --require-omnigent` requests a one-time check without changing
+saved choices. Existing receipts without this field retain the default off.
+See the [compatibility scope and validation](omnigent-compatibility.md).
+
+```bash
+pi-shared setup --mode cloud --with-omnigent --plan
+pi-shared setup --mode cloud --with-omnigent
+```
+
 `--without-browser` omits browser-worker and its Chromium download. This does
 not install the separate private `app_*` browser binaries: those are an optional
 Pi browser-capture prerequisite. Other optional features, such as PowerPoint

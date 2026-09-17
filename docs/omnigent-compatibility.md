@@ -42,8 +42,21 @@ shell function such as `pi-glm53` is forwarded to the runner.
 
 ## Prerequisites, not automatic activation
 
+Available in the public Homebrew CLI starting with pi-shared **0.1.4** and the
+private adapter starting with pi-databricks **0.2.1**:
+
 ```bash
-# During an explicitly authorized installation:
+# Public Homebrew path: inspect first, then apply only when authorized.
+pi-shared setup --mode cloud --with-omnigent --plan
+pi-shared setup --mode cloud --with-omnigent
+pi-shared status --require-omnigent
+
+# Private toolkit: same opt-in, forwarded through the public CLI or source path.
+pi-databricks install --with-omnigent --plan
+pi-databricks install --with-omnigent
+pi-databricks doctor --with-omnigent
+
+# Source installation:
 ./install.sh --with-omnigent
 
 # Or inspect an existing standard installation:
@@ -57,6 +70,18 @@ session, generate a profile, start services, repair configuration, or test a
 model. The normal install still installs its selected modules; the Omnigent
 flag only adds checks. Without the flag, Omnigent is neither required nor
 invoked. Existing direct-provider installations remain supported.
+
+The public setup receipt remembers this opt-in; ordinary `pi-shared update`
+and `status` repeat the check. `status --require-omnigent` adds a one-time check
+without changing that receipt. On a pre-existing public installation, the private
+adapter likewise adds a one-time final check without rewriting the public
+selection; repeat `--with-omnigent` on private install/update/doctor when desired.
+A fresh private installation forwards the opt-in to public setup, which saves it.
+
+These are **compatibility checks**, not a promise that the full installers make
+no provider calls: the separately selected Databricks onboarding hooks may prompt
+for authentication or validate a new route with inference. Use `--plan` and the
+isolated non-inference smoke when only compatibility verification is authorized.
 
 The package-import probe executes trusted extension initialization, which can
 have side effects. It is not a strict read-only filesystem inspection. For
@@ -129,7 +154,7 @@ production profiles at development branches.
 - Automatic gateway lifecycle, credential refresh, catalog regeneration, or
   profile repair by the compatibility layer.
 
-## Development validation — 2026-09-16
+## Initial development validation — 2026-09-16
 
 These are development-worktree results, not a published release or an inference
 certificate. No changes were activated in the daily Pi profiles.
