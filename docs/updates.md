@@ -6,23 +6,25 @@ After setup with this version, routine maintenance is:
 pi-shared update
 ```
 
-There is no repeated component questionnaire and no manual `pi-regen` step.
+There is no repeated component questionnaire and no manual regeneration step.
 `pi-shared update --plan` reads the saved plan without commands, downloads or
 writes. `--modules-only` is an advanced/testing option that skips updating the
-owning CLI/runtime. The shell shortcut `pi-shared-update` delegates to the same
-command when the managed setup/CLI exists. A resource-only installation without
-that coordinator keeps its explicitly labelled, limited Git updater.
+owning CLI/runtime. A resource-only source installation without that coordinator
+keeps its explicitly labelled, limited Git updater.
 
 ## Remembered configuration
 
 The owner-only `~/.config/pi-shared/setup.json` receipt uses schema 2. It records
-selected modules, profile/module/launcher paths, supported non-secret installer
-settings, successful applied revisions, runtime versions and service ownership
-fingerprints. It does not copy model weights, provider credentials, or complete
-service environments. Model choices and authentication remain in their existing
-configuration files. Regeneration arguments in the private generated launcher
-are authoritative for model endpoint/output settings and direct-shortcut choices.
-Remembered custom paths must be absolute (a leading `~` is expanded during setup).
+selected modules, profile/module paths, the unified-CLI config path (`cli_file`,
+default `~/.pi/launcher.json`), supported non-secret installer settings,
+successful applied revisions, runtime versions and service ownership
+fingerprints. Legacy receipts additionally retain `launchers_file` as a
+migration input; it is never evaluated as shell. It does not copy model weights,
+provider credentials, or complete service environments. Model choices and
+authentication remain in their existing configuration files. The launcher
+config's generation metadata is authoritative for model endpoint/output settings
+and direct-shortcut choices. Remembered custom paths must be absolute (a leading
+`~` is expanded during setup).
 
 Receipts from 0.1.2 and earlier lack some of this information. They remain readable
 by `status`, but `update` refuses to guess their missing settings. Run setup once
@@ -49,8 +51,13 @@ setup; do not choose a fresh oMLX installation over an already running manager.
    Runtime prerequisite changes also trigger reapplication of selected services.
    Component installers own their restart/verification; there is no duplicate
    orchestration restart pass. An unchanged, healthy service is not restarted.
-5. Regenerate from the current launcher metadata, run the selected doctor checks,
-   and save success only after all selected work succeeds.
+5. Regenerate the unified-CLI config offline from its recorded generation
+   metadata (`pi --launcher-refresh`; never a shell eval), run the selected
+   doctor checks, and save success only after all selected work succeeds. New
+   setups always carry `PI_SHARED_CLI_OUT`, so this path replaces the old shell
+   launcher refresh. Legacy receipts without `cli_file` keep the limited Git
+   launcher updater until they are migrated by running setup once with this
+   version.
 
 Owned Homebrew oMLX is upgraded separately. Its active package version is compared
 to the last successfully applied version, so a failed restart is retried even
@@ -66,31 +73,26 @@ including custom config/catalog/ledger/log/backup paths. Unsupported custom
 environment entries fail closed rather than being discarded. Browser-worker
 recovers its own persisted settings. A replaced service identity is not adopted.
 
-## Automatic shell refresh
+## Unified CLI refresh
 
-New generated launchers register one zsh `precmd` hook for interactive shells.
-At the next prompt it checks bounded local file fingerprints. The initial prompt
-establishes a refresh baseline; unchanged inputs cause no rendering or writes.
-Changes to the generated launcher, alias catalog, or configured local status file
-refresh model shortcuts and remove retired *generated* model functions. Personal
-functions outside that recorded set are not removed. A new shell or explicit
-setup/source is needed once to load this new hook into an older shell.
+New installs route model aliases through the packaged `pi` command instead of
+generated shell functions, so there is no `~/.zshrc` hook to load and no new
+shell to open. The alias catalog lives in `~/.pi/launcher.json` (override with
+`PI_LAUNCHER_CONFIG`). `pi --launcher-list` prints configured routes,
+`pi --launcher-check` validates the config read-only, and `pi --launcher-refresh`
+regenerates it offline from its recorded generation metadata. None of these
+contact status URLs, providers, GitHub, or model endpoints, and none run
+inference; `--launcher-check`/`--launcher-refresh` do not even require the stock
+runtime.
 
-The helper `pi-shared/bin/pi-launchers-refresh` reads JSON argument metadata;
-it never evaluates the existing shell body. Only recognized options, matching
-installation/output identities and safe owned files are accepted. It invokes
-the trusted renderer with arguments over stdin, so stored gateway credentials
-are not exposed as subprocess arguments. Outputs are private files. Cached,
-minimal previously observed oMLX hints are preserved; automatic refresh never
-contacts status URLs, providers, GitHub, or model endpoints.
-
-The model-output digest protects edits made outside the generator. Automatic
-refresh pauses rather than overwriting manual changes or taking ownership of a
-pre-existing manual model file. Inspect/reconcile generator settings before an
-explicit `pi-regen`. Missing/invalid catalogs still cannot erase configured
-launchers. Unchanged failures warn once and retry when inputs change. Shell
-error-exit mode is not allowed to turn a refresh failure into an exited shell.
-Prompt refresh waits while explicit setup/update holds its lock.
+`pi <alias>` launches that route on demand, resolving the current config each
+time, so newly added shortcuts appear and removed ones disappear without any
+regeneration step. `pi -- <prompt>` bypasses aliases and `pi list` stays the
+stock package command. The launcher reads only recognized generation options and
+safe owned files, and never evaluates a shell body; stored gateway credentials
+are not exposed as subprocess arguments and generated outputs are private files.
+Missing or invalid catalogs cannot erase a configured launcher. Explicit
+setup/update holds the per-user operation lock while it regenerates the config.
 
 ## Failure boundaries
 

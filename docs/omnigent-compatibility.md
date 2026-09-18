@@ -129,9 +129,13 @@ Only run it against reviewed local packages. It:
 3. Checks package imports through the installed Pi SDK.
 4. Starts its own foreground loopback Omnigent server on an ephemeral port,
    then requests a native terminal with explicit provider/model and `--offline`.
-5. Uses a test extension to record the actual Pi executable, TUI mode, profile,
-   selected model, package registrations, basic tool presence, and Omnigent
-   bridge command. It submits no prompt and requests Pi shutdown.
+5. Uses a test extension to record the actual running Pi executable, TUI mode,
+   profile, selected model, package registrations, basic tool presence, and
+   Omnigent bridge command. The packaged `pi` is a bootstrap wrapper that execs
+   the stock runtime (`PI_UPSTREAM_BIN`, exposed as a sibling `pi-upstream`), so
+   the recorded executable is that stock runtime's realpath, not the wrapper.
+   The smoke supplies `PI_UPSTREAM_BIN` and asserts this identity. It submits no
+   prompt and requests Pi shutdown.
 6. Stops only its isolated host target and owned foreground processes, and waits
    for captured fixture descendants/tmux to exit. It never uses the broad
    `omnigent server stop`/`omnigent stop` commands. Successful

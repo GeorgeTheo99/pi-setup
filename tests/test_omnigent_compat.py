@@ -35,9 +35,11 @@ def test_environment_does_not_forward_live_selectors_or_credentials(tmp_path, mo
     for key in ["OPENAI_API_KEY", "DATABRICKS_TOKEN", "OMNIGENT_PI_PATH", "PI_CODING_AGENT_DIR",
                 "OMNIGENT_RUNNER_ENV_PASSTHROUGH", "NODE_OPTIONS", "PYTHONPATH", "HTTP_PROXY"]:
         monkeypatch.setenv(key, "DO_NOT_FORWARD")
-    env = smoke.isolated_env(tmp_path, "/fixture/bin:/usr/bin:/bin")
+    env = smoke.isolated_env(tmp_path, "/fixture/bin:/usr/bin:/bin", Path("/fixture/stock/pi"))
     assert "DO_NOT_FORWARD" not in env.values()
     assert env["HOME"] == str(tmp_path)
+    # The stock runtime is supplied explicitly, never inherited from the caller.
+    assert env["PI_UPSTREAM_BIN"] == "/fixture/stock/pi"
     assert env["OMNIGENT_DATA_DIR"].startswith(str(tmp_path))
     assert env["OMNIGENT_CONFIG_HOME"].startswith(str(tmp_path))
     assert env["DATABRICKS_CONFIG_FILE"].startswith(str(tmp_path))
@@ -57,12 +59,30 @@ def test_restricted_path_excludes_unrelated_installed_clis(tmp_path, monkeypatch
     monkeypatch.setenv("PATH", str(installed))
     home = tmp_path / "home"
     home.mkdir()
-    path = smoke.restricted_path(home, executables)
+    stock = installed / "stock-pi"
+    stock.write_text("fixture stock runtime; never run\n")
+    path = smoke.restricted_path(home, executables, stock)
     assert str(installed) not in path.split(":")
     assert "/usr/local/bin" not in path.split(":")
     assert "/opt/homebrew/bin" not in path.split(":")
-    assert sorted(p.name for p in (home / "bin").iterdir()) == ["node", "omnigent", "pi", "tmux"]
+    # The stock runtime is exposed as a sibling `pi-upstream` for the bootstrap.
+    assert sorted(p.name for p in (home / "bin").iterdir()) == ["node", "omnigent", "pi", "pi-upstream", "tmux"]
+    assert (home / "bin" / "pi-upstream").resolve() == stock.resolve()
     assert all((home / "bin" / name).resolve() == Path(target) for name, target in executables.items())
+
+
+def test_stock_executable_prefers_sibling_pi_upstream(tmp_path):
+    installed = tmp_path / "bin"
+    installed.mkdir()
+    cli = installed / "cli.js"
+    cli.write_text("stock\n")
+    pi = installed / "pi"
+    pi.write_text("bootstrap wrapper\n")
+    # No sibling: `pi` itself is treated as the stock runtime (pre-bootstrap layout).
+    assert smoke.stock_executable(str(pi)) == pi.resolve()
+    # Sibling present: the stock CLI identity is resolved through it.
+    (installed / "pi-upstream").symlink_to(cli)
+    assert smoke.stock_executable(str(pi)) == cli.resolve()
 
 
 def test_native_argv_pins_model_and_offline_without_a_prompt():
@@ -80,7 +100,7 @@ def valid_report(tmp_path):
 
 
 def test_structured_native_report_accepts_exact_contract(tmp_path):
-    smoke.validate_report(valid_report(tmp_path), tmp_path, "/fixture/pi", "gateway", "fixture-model", 2)
+    smoke.validate_report(valid_report(tmp_path), tmp_path, Path("/fixture/pi"), "gateway", "fixture-model", 2)
 
 
 @pytest.mark.parametrize("field,value", [("mode", "rpc"), ("model", "wrong"), ("provider", "wrong"),
@@ -90,7 +110,7 @@ def test_structured_report_rejects_partial_or_wrong_launch(tmp_path, field, valu
     report = valid_report(tmp_path)
     report[field] = value
     with pytest.raises(ValueError, match="did not match"):
-        smoke.validate_report(report, tmp_path, "/fixture/pi", "gateway", "fixture-model", 2)
+        smoke.validate_report(report, tmp_path, Path("/fixture/pi"), "gateway", "fixture-model", 2)
 
 
 def test_fixture_process_snapshot_only_includes_own_target_and_descendants(tmp_path, monkeypatch):

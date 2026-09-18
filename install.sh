@@ -19,8 +19,8 @@
 #
 # Exit status: 0 only when every selected module/hook succeeded AND the final
 # doctor passes. Otherwise non-zero with the failing check(s) printed. The
-# generated model launchers (`pi-list`, `pi-sonnet`, ...) are sourced from
-# ~/.zshrc via a marked block; set PI_SETUP_NO_SHELL_RC=1 to opt out.
+# unified CLI needs no shell startup wiring. Recognized obsolete generated
+# launcher lines are removed; PI_SETUP_NO_SHELL_RC=1 opts out of that cleanup.
 set -euo pipefail
 
 SETUP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -215,7 +215,7 @@ PY
     fi
   fi
   log "Installing $name..."
-  if [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" = pi-shared ]; then
+  if [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" = pi-shared ] && [ -z "${PI_SHARED_CLI_OUT:-}" ]; then
     # Keep the current launcher metadata/profile selection for the final refresh.
     (cd "$dest" && ./install.sh --no-catalog) || die "$name installer failed"
   else
@@ -256,47 +256,70 @@ run_overlay() {
 }
 
 # ---------------------------------------------------------------------------
-# Shell integration: source generated launchers (pi-list, pi-sonnet, ...)
+# Remove only exact legacy wiring; never create or source a shell rc.
 # ---------------------------------------------------------------------------
 LAUNCHERS="$HOME/.pi/generated/pi-launchers.zsh"
-RC_BEGIN="# >>> pi-setup generated launchers >>>"
-RC_END="# <<< pi-setup generated launchers <<<"
 
 install_shell_rc() {
-  [ "${PI_SETUP_NO_SHELL_RC:-0}" = "1" ] && { log "Skipping ~/.zshrc integration (PI_SETUP_NO_SHELL_RC=1)"; return 0; }
-  local rc="${PI_SETUP_ZSHRC:-$HOME/.zshrc}"
-  if [ -f "$rc" ] && grep -qF "$RC_BEGIN" "$rc"; then
-    log "$rc already sources generated launchers"
-    return 0
-  fi
-  if [ -f "$rc" ] && python3 - "$rc" <<'PY'
-import sys
+  # Legacy source-only orchestrators have not installed the replacement CLI.
+  # Leave their existing shell wiring intact until they opt into JSON routing.
+  [ -n "${PI_SHARED_CLI_OUT:-}" ] || return 0
+  [ "${PI_SETUP_NO_SHELL_RC:-0}" = "1" ] && { log "Skipping shell cleanup (PI_SETUP_NO_SHELL_RC=1)"; return 0; }
+  python3 - "${PI_SETUP_ZSHRC:-$HOME/.zshrc}" <<'PY'
+import os, stat, sys, tempfile
 from pathlib import Path
-lines = Path(sys.argv[1]).read_text().splitlines()
-sys.exit(0 if any('pi-launchers.zsh' in line and not line.lstrip().startswith('#')
-                  and ('source ' in line or '. ' in line) for line in lines) else 1)
+rc = Path(sys.argv[1]).expanduser()
+if not rc.exists() and not rc.is_symlink():
+    raise SystemExit(0)
+info = rc.lstat()
+if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_nlink != 1 or info.st_mode & 0o022:
+    raise SystemExit(f"Unsafe shell rc; review manually or opt out: {rc}")
+original = rc.read_bytes()
+text = original.decode('utf-8')
+begin = '# >>> pi-setup generated launchers >>>'
+end = '# <<< pi-setup generated launchers <<<'
+source = '[ -f "$HOME/.pi/generated/pi-launchers.zsh" ] && source "$HOME/.pi/generated/pi-launchers.zsh"'
+text = text.replace(begin + '\n' + source + '\n' + end + '\n', '')
+known = {source}
+legacy_paths = ('$HOME/.pi/generated/pi-launchers.zsh', '$HOME/.pi/model-gateway/pi-launchers.zsh')
+for path in legacy_paths:
+    known.add(f'source "{path}"')
+    known.add(f'[ -f "{path}" ] && source "{path}"')
+# Modified marked blocks are user content: preserve them in their entirety.
+lines, inside = [], False
+pending = iter(text.splitlines(keepends=True))
+for line in pending:
+    value = line.rstrip('\n')
+    if not inside and value in {f'[ -f "{path}" ] && ' + chr(92) for path in legacy_paths}:
+        following = next(pending, '')
+        path = next(path for path in legacy_paths if f'[ -f "{path}" ]' in value)
+        if following.rstrip('\n') == f'  source "{path}"':
+            continue
+        lines.extend((line, following))
+        continue
+    if value == begin:
+        inside = True
+    if inside or value not in known:
+        lines.append(line)
+    if value == end:
+        inside = False
+result = ''.join(lines).encode('utf-8')
+if result != original:
+    fd, backup = tempfile.mkstemp(prefix=rc.name + '.bak-', dir=rc.parent)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(original)
+    fd, temporary = tempfile.mkstemp(prefix=rc.name + '.tmp-', dir=rc.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(result)
+            os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+        os.replace(temporary, rc)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+    print(f'Removed recognized legacy launcher wiring from {rc}; private backup: {backup}')
+    print('Restart existing shells to discard loaded functions; shell startup was not executed.')
 PY
-  then
-    log "$rc already references pi-launchers.zsh (unmanaged line); leaving it"
-    return 0
-  fi
-  if [ -f "$rc" ]; then
-    local backup
-    backup="$rc.bak-$(date +%Y%m%d-%H%M%S)-$$"
-    (umask 077; cp "$rc" "$backup"; chmod 600 "$backup")
-  fi
-  local needs_newline=0
-  if [ -s "$rc" ] && [ "$(tail -c1 "$rc" | od -An -c | tr -d ' ')" != '\n' ]; then
-    needs_newline=1
-  fi
-  {
-    if [ "$needs_newline" -eq 1 ]; then printf '\n'; fi
-    # Preserve literal $HOME for the shell that later sources this file.
-    # shellcheck disable=SC2016
-    printf '%s\n[ -f "$HOME/.pi/generated/pi-launchers.zsh" ] && source "$HOME/.pi/generated/pi-launchers.zsh"\n%s\n' \
-      "$RC_BEGIN" "$RC_END"
-  } >> "$rc"
-  log "Added generated-launcher block to $rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -338,8 +361,13 @@ install_shell_rc
 
 if [ "$UPDATE_CHANGED" -eq 1 ] && [ "${PI_SETUP_REFRESH_LAUNCHERS:-1}" = 1 ]; then
   # Regenerate from the saved generated metadata, not reset endpoint/model choices.
-  "$CODE_ROOT/pi-shared/bin/pi-launchers-refresh" --launcher "${PI_SHARED_LAUNCHERS_OUT:-$LAUNCHERS}" \
-    || die "Launcher refresh failed; selected module updates were not rolled back"
+  if [ -n "${PI_SHARED_CLI_OUT:-}" ]; then
+    PI_LAUNCHER_CONFIG="$PI_SHARED_CLI_OUT" "$CODE_ROOT/pi-shared/bin/pi-launch" --launcher-refresh \
+      || die "CLI refresh failed; selected module updates were not rolled back"
+  else
+    "$CODE_ROOT/pi-shared/bin/pi-launchers-refresh" --launcher "${PI_SHARED_LAUNCHERS_OUT:-$LAUNCHERS}" \
+      || die "Launcher refresh failed; selected module updates were not rolled back"
+  fi
 fi
 
 log "Running doctor..."
@@ -356,9 +384,5 @@ if [ "$REQUIRE_OMNIGENT" -eq 1 ]; then
   log "Omnigent native-Pi prerequisites checked; native launch and inference were not tested."
   log "Compatibility scope and explicit launch command: $SETUP_DIR/docs/omnigent-compatibility.md"
 fi
-if [ -s "$LAUNCHERS" ]; then
-  log "Start a new shell and run \`pi-list\` to see available commands. Model launchers appear after a gateway alias catalog is configured."
-  log "(Bare \`pi\` uses the active profile, not necessarily the generated model catalog.)"
-else
-  log "Start a new shell, then run: pi"
-fi
+log "Run \`pi\` for stock Pi, or \`pi --launcher-list\` for configured aliases."
+log "Restart older shells to discard previously loaded launcher functions; no shell rc was sourced."

@@ -187,6 +187,61 @@ def gateway_fixture(env):
     return launchers
 
 
+def cli_fixture(env, *, rc=0):
+    """A unified-CLI setup: ~/.pi/launcher.json plus a fake pi-launch helper."""
+    home = Path(env["HOME"])
+    helpers = Path(env["PI_SETUP_CODE_ROOT"]) / "pi-shared/bin"
+    cli = home / ".pi/launcher.json"
+    cli.parent.mkdir(parents=True, exist_ok=True)
+    cli.write_text("{}")
+    # --launcher-check is read-only/offline: it never needs PI_UPSTREAM_BIN.
+    executable(helpers / "pi-launch",
+               'test "$1" = --launcher-check || exit 97; '
+               'test -n "$PI_LAUNCHER_CONFIG" || exit 96; '
+               f'echo launcher-check config=$PI_LAUNCHER_CONFIG; exit {rc}')
+    return cli
+
+
+def test_unified_cli_config_is_checked_read_only_without_upstream(tmp_path):
+    env, _ = fixture(tmp_path)
+    cli = cli_fixture(env)
+    result = run(env, "--module", "pi-shared")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"launcher-check config={cli}" in result.stdout
+    assert "Legacy launcher metadata" not in result.stdout
+    assert "--require-models" not in result.stdout
+
+
+def test_unified_cli_check_failure_is_a_doctor_failure(tmp_path):
+    env, _ = fixture(tmp_path)
+    cli_fixture(env, rc=5)
+    result = run(env, "--module", "pi-shared")
+    assert result.returncode == 1
+    assert "Check exited 5" in result.stdout
+
+
+def test_missing_cli_helper_when_config_present_is_a_failure(tmp_path):
+    env, _ = fixture(tmp_path)
+    (Path(env["HOME"]) / ".pi/launcher.json").parent.mkdir(parents=True, exist_ok=True)
+    (Path(env["HOME"]) / ".pi/launcher.json").write_text("{}")
+    result = run(env, "--module", "pi-shared")
+    assert result.returncode == 1
+    assert "Unified CLI helper missing" in result.stdout
+
+
+def test_unified_cli_selected_suppresses_legacy_shell_launcher_path(tmp_path):
+    # With the unified CLI selected, a stale generated pi-launchers.zsh must not
+    # trigger the legacy zsh syntax/profile path.
+    env, _ = fixture(tmp_path)
+    cli_fixture(env)
+    gateway_fixture(env)  # writes a legacy launchers file and a zsh stub
+    result = run(env)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "launcher-check" in result.stdout
+    assert "launcher-syntax" not in result.stdout
+    assert "Legacy launcher metadata" not in result.stdout
+
+
 def test_fresh_default_services_do_not_require_unselected_catalog(tmp_path):
     env, helpers = fixture(tmp_path)
     root = Path(env["PI_SETUP_CODE_ROOT"])

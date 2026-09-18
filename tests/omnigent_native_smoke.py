@@ -75,21 +75,40 @@ def fixture_model(source: Path, provider: str, model: str) -> dict:
     }}}
 
 
-def restricted_path(home: Path, executables: dict[str, str]) -> str:
+def stock_executable(pi: str) -> Path:
+    """Resolve the stock Pi runtime the bootstrap execs into.
+
+    The Homebrew package installs `bin/pi` as a bootstrap wrapper and exposes the
+    stock CLI (cli.js) through a sibling `pi-upstream` symlink; the running
+    process's argv[1] therefore resolves to that stock executable, not to the
+    wrapper. A pre-bootstrap layout has no sibling and `pi` is itself stock.
+    """
+    sibling = Path(pi).resolve(strict=True).parent / "pi-upstream"
+    return (sibling if sibling.exists() else Path(pi)).resolve(strict=True)
+
+
+def restricted_path(home: Path, executables: dict[str, str], stock: Path) -> str:
     """Omnigent probes other installed CLIs at startup: never expose the caller's PATH."""
     directory = home / "bin"
     directory.mkdir()
     for name, executable in executables.items():
         (directory / name).symlink_to(Path(executable).resolve(strict=True))
+    # Expose the stock runtime so the bootstrap `pi` can exec it without the
+    # packaging environment; the wrapper resolves it via PI_UPSTREAM_BIN.
+    if not (directory / "pi-upstream").exists():
+        (directory / "pi-upstream").symlink_to(stock)
     return f"{directory}:/usr/bin:/bin:/usr/sbin:/sbin"
 
 
-def isolated_env(home: Path, path: str) -> dict[str, str]:
+def isolated_env(home: Path, path: str, stock: Path) -> dict[str, str]:
     """Do not inherit credential families, shell startup, or live Pi/Omnigent selectors."""
     temp = home / "tmp"
     temp.mkdir()
     return {
         "HOME": str(home), "PATH": path, "TMPDIR": str(temp),
+        # Supply the stock runtime the bootstrap `pi` execs; packaging normally
+        # sets this. Without a setup receipt the wrapper routes straight to it.
+        "PI_UPSTREAM_BIN": str(stock),
         "USER": os.environ.get("USER", "compatibility-test"),
         "LOGNAME": os.environ.get("LOGNAME", "compatibility-test"),
         "SHELL": "/bin/sh", "TERM": "xterm-256color", "LANG": "en_US.UTF-8",
@@ -170,10 +189,10 @@ def wait_stopped(pids: set[int]) -> bool:
         time.sleep(0.25)
 
 
-def validate_report(report: dict, home: Path, pi: str, provider: str, model: str, count: int) -> None:
+def validate_report(report: dict, home: Path, pi: Path, provider: str, model: str, count: int) -> None:
     expected = {
         "mode": "tui", "omnigent": True, "profile": str(home / ".pi/agent"),
-        "executable": str(Path(pi).resolve()), "provider": provider, "model": model,
+        "executable": str(pi.resolve()), "provider": provider, "model": model,
         "packages_loaded": [True] * count, "basic_tools": True,
         "bridge_command": True, "inference_tested": False,
     }
@@ -187,6 +206,7 @@ def smoke(source: Path, packages: list[Path], provider: str, model: str) -> dict
     paths = {name: shutil.which(name) for name in ("pi", "omnigent", "tmux", "node")}
     if not all(paths.values()):
         raise ValueError("pi, omnigent, tmux, and node must already be installed on PATH")
+    stock = stock_executable(paths["pi"])
     catalog = fixture_model(source, provider, model)
     roots = [p.expanduser().resolve(strict=True) for p in packages]
     shared = next((p for p in roots if (p / "bin/pi-profile-check").is_file()), None)
@@ -197,7 +217,7 @@ def smoke(source: Path, packages: list[Path], provider: str, model: str) -> dict
     # macOS's default /var/folders TMPDIR makes nested tmux socket paths exceed
     # sockaddr_un.sun_path. Keep the entire disposable HOME short and private.
     home = Path(tempfile.mkdtemp(prefix="pi-omni-", dir="/tmp"))
-    env = isolated_env(home, restricted_path(home, paths))
+    env = isolated_env(home, restricted_path(home, paths, stock), stock)
     work = home / "workspace"
     work.mkdir()
     agent = home / ".pi/agent"
@@ -258,7 +278,7 @@ def smoke(source: Path, packages: list[Path], provider: str, model: str) -> dict
                 raise TimeoutError("Native launch did not produce its structured report")
             time.sleep(0.25)
         report = json.loads(report_path.read_text())
-        validate_report(report, home, paths["pi"], provider, model, len(roots))
+        validate_report(report, home, stock, provider, model, len(roots))
         successful = True
     finally:
         snapshot_ok = True

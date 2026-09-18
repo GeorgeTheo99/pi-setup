@@ -11,7 +11,8 @@ import subprocess
 
 SETTINGS = (
     "PI_SHARED_AGENT_DIR", "PI_SHARED_OMLX_AGENT_DIR", "PI_SHARED_CATALOG_PI_AGENT_DIR",
-    "PI_SHARED_ALIASES", "PI_SHARED_MODELS_OUT", "PI_SHARED_LAUNCHERS_OUT", "PI_SHARED_BIN_DIR",
+    "PI_SHARED_ALIASES", "PI_SHARED_MODELS_OUT", "PI_SHARED_LAUNCHERS_OUT", "PI_SHARED_CLI_OUT", "PI_SHARED_BIN_DIR",
+    "PI_SHARED_DIRECT_LAUNCHERS", "PI_SHARED_LS99_EXTRAS",
     "PI_SETUP_ZSHRC", "PI_SETUP_NO_SHELL_RC", "LOCAL_SEARCH_INSTALL_CONFIG",
     "MODEL_GATEWAY_LAUNCHD_LABEL", "MODEL_GATEWAY_PLIST_DIR", "MODEL_GATEWAY_BIN_DIR",
 )
@@ -29,7 +30,9 @@ def remember_settings(env):
             raise RuntimeError(f"Invalid remembered setting: {key}")
         if key == "MODEL_GATEWAY_LAUNCHD_LABEL" and not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
             raise RuntimeError("Invalid gateway service label")
-        if key not in {"MODEL_GATEWAY_LAUNCHD_LABEL", "PI_SETUP_NO_SHELL_RC"}:
+        if key in {"PI_SHARED_DIRECT_LAUNCHERS", "PI_SHARED_LS99_EXTRAS", "PI_SETUP_NO_SHELL_RC"} and value not in {"0", "1"}:
+            raise RuntimeError(f"Invalid boolean setting: {key}")
+        if key not in {"MODEL_GATEWAY_LAUNCHD_LABEL", "PI_SETUP_NO_SHELL_RC", "PI_SHARED_DIRECT_LAUNCHERS", "PI_SHARED_LS99_EXTRAS"}:
             if key == "PI_SHARED_CATALOG_PI_AGENT_DIR" and not value:
                 result[key] = value
                 continue

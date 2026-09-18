@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Package bootstrap: stock Pi before setup, trusted shared launcher afterwards."""
+import json
+import os
+from pathlib import Path
+import stat
+import sys
+
+
+def private_json(path, *, private=True):
+    for parent in (path.parent, path.parent.parent):
+        info = parent.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ValueError("unsafe configuration directory")
+    info = path.lstat()
+    if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+            or info.st_mode & (0o077 if private else 0o022) or info.st_nlink != 1 or info.st_size > 65536):
+        raise ValueError("configuration must be an owner-only regular file")
+    return json.loads(path.read_text())
+
+
+def absolute(value):
+    if not isinstance(value, str) or not value or any(c in value for c in "\0\r\n") or not Path(value).is_absolute():
+        raise ValueError("configuration paths must be absolute")
+    return Path(value)
+
+
+def main():
+    upstream = absolute(os.environ.get("PI_UPSTREAM_BIN"))
+    if not upstream.is_file() or not os.access(upstream, os.X_OK) or upstream.resolve() == Path(__file__).resolve():
+        raise ValueError("PI_UPSTREAM_BIN must identify the executable stock Pi runtime")
+    receipt = Path.home() / ".config/pi-shared/setup.json"
+    shared = None
+    if receipt.exists() or receipt.is_symlink():
+        data = private_json(receipt)
+        if (not isinstance(data, dict) or data.get("version") not in (1, 2)
+                or data.get("status") not in ("incomplete", "module-checks-passed")
+                or not isinstance(data.get("modules"), list) or "pi-shared" not in data["modules"]):
+            raise ValueError("invalid setup receipt; repair with pi-shared setup")
+        shared = absolute(data.get("code_root")) / "pi-shared"
+        if "cli_file" in data:
+            os.environ.setdefault("PI_LAUNCHER_CONFIG", str(absolute(data["cli_file"])))
+    else:
+        # The conventional path alone is not authority to execute a checkout.
+        # Source installations can explicitly configure it as their Pi package.
+        candidate = Path.home() / ".local/share/pi-shared/modules/pi-shared"
+        settings = Path.home() / ".pi/agent/settings.json"
+        if settings.exists():
+            try:
+                data = private_json(settings, private=False)
+            except (OSError, ValueError):
+                data = {}  # Unconfigured/unsafe profile is not authority to delegate.
+            entries = data.get("packages", []) if isinstance(data, dict) else []
+            for entry in entries if isinstance(entries, list) else []:
+                source = entry.get("source") if isinstance(entry, dict) else entry
+                if isinstance(source, str) and (settings.parent / Path(source).expanduser()).resolve() == candidate.resolve():
+                    shared = candidate
+    launcher = shared / "bin/pi-launch" if shared else None
+    if launcher and launcher.is_file() and os.access(launcher, os.X_OK):
+        # Setup chose this checkout. Never search cwd, PATH or unrelated siblings.
+        for path in (shared.parent, shared, shared / "bin", launcher):
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+                raise ValueError("unsafe shared launcher; repair the configured checkout")
+        os.execv(str(launcher), [str(launcher), *sys.argv[1:]])
+    if sys.argv[1:2] and sys.argv[1].startswith("--launcher-"):
+        raise ValueError("launcher support is not installed; run pi-shared setup (or pi-shared update for an existing installation)")
+    os.execv(str(upstream), [str(upstream), *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError) as exc:
+        print(f"pi: {exc}", file=sys.stderr)
+        sys.exit(1)

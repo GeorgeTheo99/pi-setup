@@ -184,7 +184,26 @@ def main():
     service("local_web_search", root / "local_web_search/scripts/local-search",
             "local readiness and MCP tool inventory verified; Brave provider request NOT tested")
 
-    launchers = home / ".pi/generated/pi-launchers.zsh"
+    cli_config = Path(os.environ.get("PI_LAUNCHER_CONFIG") or os.environ.get("PI_SHARED_CLI_OUT")
+                      or home / ".pi/launcher.json").expanduser()
+    cli_selected = bool(os.environ.get("PI_SHARED_CLI_OUT")) or cli_config.exists() or cli_config.is_symlink()
+    cli_required = os.environ.get("PI_SHARED_BOOTSTRAP_LAUNCHERS") == "1"
+    if cli_selected and (cli_required or args.require_catalog or cli_config.exists() or cli_config.is_symlink()):
+        launcher = shared / "bin/pi-launch"
+        if not cli_config.is_absolute() or any(c in str(cli_config) for c in "\r\n\0"):
+            doctor.bad("CLI config path must be absolute and contain no control characters")
+        elif not launcher.is_file() or not os.access(launcher, os.X_OK):
+            doctor.bad(f"Unified CLI helper missing: {launcher}. Repair: pi-shared update")
+        else:
+            doctor.command([str(launcher), "--launcher-check"],
+                           env={**os.environ, "PI_LAUNCHER_CONFIG": str(cli_config)})
+        if args.require_catalog and probe.is_file():
+            catalog_agent = Path(os.environ.get("PI_SHARED_OMLX_AGENT_DIR", home / ".pi-omlx/agent")).expanduser()
+            doctor.command([str(probe), "--agent-dir", str(catalog_agent),
+                            "--expect-package", str(shared), "--require-models"])
+
+    # Old receipts remain diagnosable until their explicit update migrates them.
+    launchers = Path(os.environ.get("PI_SHARED_LAUNCHERS_OUT", home / ".pi/generated/pi-launchers.zsh")).expanduser()
     bootstrap_launchers = False
     if launchers.is_file():
         try:
@@ -195,28 +214,14 @@ def main():
             doctor.bad(f"Cannot inspect generated launcher state: {exc}")
     catalog_selected = (launchers.exists() or (home / ".pi-omlx/agent/settings.json").exists())
     bootstrap_required = os.environ.get("PI_SHARED_BOOTSTRAP_LAUNCHERS") == "1"
-    if args.require_catalog or bootstrap_required or (gateway_selected and catalog_selected):
+    if not cli_selected and (args.require_catalog or bootstrap_required or (gateway_selected and catalog_selected)):
         if not launchers.is_file():
             doctor.bad(f"Missing launchers: {launchers}. Repair: rerun the overlay catalog hook.")
         elif not shutil.which("zsh"):
             doctor.bad("zsh is required for the generated model launchers")
         else:
-            syntax_ok = doctor.command(["zsh", "-n", str(launchers)], timeout=10)
-            if os.environ.get("PI_SETUP_NO_SHELL_RC") == "1":
-                doctor.warn(f"Shell integration opted out; source {launchers} before using model launchers")
-            else:
-                rc = Path(os.environ.get("PI_SETUP_ZSHRC", home / ".zshrc")).expanduser()
-                try:
-                    lines = rc.read_text().splitlines() if rc.is_file() else []
-                    hooked = any(not line.lstrip().startswith("#") and "pi-launchers.zsh" in line
-                                 and ("source " in line or ". " in line) for line in lines)
-                except (OSError, ValueError) as exc:
-                    doctor.bad(f"Cannot inspect launcher hook in {rc}: {exc}")
-                    hooked = False
-                if not hooked:
-                    doctor.bad(f"No launcher hook in {rc}. Repair: rerun pi-setup/install.sh")
-                elif syntax_ok:
-                    doctor.ok("Launcher syntax and shell hook configured (shell startup not executed)")
+            doctor.command(["zsh", "-n", str(launchers)], timeout=10)
+            doctor.warn("Legacy launcher metadata present; pi-shared update migrates to the unified CLI. Shell wiring is not required.")
         if probe.is_file():
             argv = [str(probe), "--agent-dir", str(home / ".pi-omlx/agent"),
                     "--expect-package", str(shared)]
@@ -229,7 +234,7 @@ def main():
                 if overlay.expanduser().resolve() == (root / "pi-databricks").resolve():
                     argv += ["--expect-package", str(overlay.expanduser().resolve())]
             doctor.command(argv)
-    elif gateway_selected:
+    elif gateway_selected and not cli_selected:
         doctor.warn("Generated model catalog not selected; direct Pi provider configuration remains available")
 
     if not selected("browser-worker"):
@@ -295,6 +300,10 @@ def main():
     if args.smoke_model:
         if not re.fullmatch(r"[a-zA-Z0-9_-]+", args.smoke_model):
             doctor.bad("--smoke-model must be a launcher alias (letters, numbers, _ or -)")
+        elif cli_selected:
+            doctor.command([str(shared / "bin/pi-launch"), args.smoke_model,
+                            "--no-tools", "-p", "Reply with exactly PI_OK"], timeout=180, required_line="PI_OK",
+                           env={**os.environ, "PI_LAUNCHER_CONFIG": str(cli_config)})
         elif not launchers.is_file():
             doctor.bad("Cannot smoke a model before launchers are installed")
         else:

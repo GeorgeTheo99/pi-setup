@@ -27,6 +27,7 @@ pi-shared setup --mode cloud --plan     # read-only preview; no downloads or com
 pi-shared setup --local                 # opt into oMLX options, now or later
 pi-shared status                        # selected module checks, not inference proof
 pi                                     # authenticate with /login and select /model
+pi --launcher-list                     # configured model aliases, once a catalog exists
 ```
 
 If Homebrew reports an **untrusted tap** (possibly followed by “invalid syntax
@@ -34,17 +35,23 @@ in tap”), review the formula and follow the
 [formula-scoped trust recovery](docs/homebrew.md#homebrew-trust-errors) before
 retrying installation. Do not disable trust checks globally.
 
-Fresh setup enables `pi-list`, `pi-regen`, `pi-shared-update`, `pi-restart`,
-`pi-default`, and `pi-openai` even before a gateway alias catalog exists. Open a
-new shell after setup. `pi-list` explains the unconfigured state; model shortcuts
-appear after configuring the gateway alias export and running `pi-regen`.
-Existing direct-launcher choices and explicit opt-outs are preserved.
+Fresh setup wires the **unified `pi` CLI** — no shell startup file is written.
+The packaged `pi` runs stock Pi until a setup receipt exists, then transparently
+routes configured model aliases through the shared launcher. Model aliases are
+stored in `~/.pi/launcher.json` (override with `PI_LAUNCHER_CONFIG`); list them
+with `pi --launcher-list`, validate with `pi --launcher-check`, regenerate
+offline with `pi --launcher-refresh`, and see all subcommands with
+`pi --launcher-help`. `pi <alias>` launches that route, `pi -- <prompt>` bypasses
+aliases, and `pi list` remains the stock package command. Aliases appear once a
+gateway/model catalog is configured; before that `pi` behaves as stock Pi.
+Existing direct-launcher choices and explicit opt-outs are preserved, and no
+generated shell functions are required or created.
 
 Routine maintenance is now `pi-shared update`: it remembers the selected setup,
-updates its owning package/source and selected modules, refreshes dependencies
-and shortcuts, and verifies the result. `pi-shared update --plan` is read-only.
-Interactive zsh prompts automatically refresh changed local catalog/launcher
-data—never software, services, or models. See [update ownership and safety](docs/updates.md),
+updates its owning package/source and selected modules, refreshes the launcher
+config (offline, via `pi --launcher-refresh`), and verifies the result.
+`pi-shared update --plan` is read-only. Updates never touch software, services,
+or models beyond the recorded selection. See [update ownership and safety](docs/updates.md),
 including the one-time setup capture required for older receipts.
 
 Homebrew installs Node, Python, uv, Git and a pinned, lockfile-backed Pi runtime.
@@ -142,14 +149,15 @@ succeeded *and* the final doctor passes. Any selected failure exits non-zero
 with the failing check and its repair command — the installer never prints a
 success banner over a broken environment.
 
-After module/overlay installation it adds one marked, file-existence-guarded
-block to `~/.zshrc` that sources generated launchers
-(`~/.pi/generated/pi-launchers.zsh`). When an overlay has generated them, a
-**new shell** has `pi-list` and its `pi-<alias>` commands (e.g. `pi-sonnet`).
-Existing content is preserved with a private backup; re-running never duplicates
-the block. Set `PI_SETUP_NO_SHELL_RC=1` to opt out, or `PI_SETUP_ZSHRC` to target
+Fresh setups write **no `~/.zshrc`**: the unified `pi` CLI needs no shell startup
+wiring. Configured model aliases are available immediately as `pi <alias>` and
+`pi --launcher-list`. For backward compatibility, the installer still *removes*
+any recognized legacy launcher block/source line it previously added to
+`~/.zshrc`, keeping a private backup; it never writes or sources a shell rc. Set
+`PI_SETUP_NO_SHELL_RC=1` to skip that cleanup, or `PI_SETUP_ZSHRC` to target
 another rc file. Shell startup is never executed by installation or diagnostics.
-Bare `pi` uses the active profile, not necessarily the generated catalog.
+Bare `pi` uses the active profile and routes through the launcher only when the
+first argument is a configured alias.
 
 ## Health check
 
@@ -178,13 +186,16 @@ bin/doctor --smoke-model sonnet         # opt into one real completion via pi-so
   loader**, not `pi --list-models`. Extension registration code executes, as at
   normal Pi startup; it may have side effects. The helper inspects extension
   errors and fails on timeouts, missing reports, or nonzero exits.
-- When model-gateway is selected and generated launchers/profile settings already
-  exist, also checks launcher syntax/shell wiring and the generated
-  `~/.pi-omlx/agent` profile with a nonempty model catalog. Use `--require-catalog`
-  to require these artifacts explicitly. A fresh gateway install without a
-  catalog remains a valid direct-provider setup; no overlay is mandatory.
-  An explicitly selected pi-databricks overlay is required to load as a package
-  when the generated profile is checked.
+- When the unified CLI is selected (a `~/.pi/launcher.json`, `PI_SHARED_CLI_OUT`,
+  or `PI_SHARED_BOOTSTRAP_LAUNCHERS=1`), the doctor runs `pi-launch
+  --launcher-check` — a read-only, offline validation of the launcher config that
+  contacts no provider and needs no stock runtime. Use `--require-catalog` to
+  additionally require a generated `~/.pi-omlx/agent` profile with a nonempty
+  model catalog. A fresh gateway install without a catalog remains a valid
+  direct-provider setup; no overlay is mandatory. Legacy `pi-launchers.zsh`
+  metadata is still syntax-checked and reported as migratable, but shell wiring
+  is no longer required. An explicitly selected pi-databricks overlay is required
+  to load as a package when the generated profile is checked.
 - Before invoking the pinned browser-worker verifier, checks for installed uv
   and Python 3.12 with `uv python find --no-python-downloads`. Missing prerequisites
   fail without calling the operator's provisioning path; provisioning belongs
@@ -225,7 +236,7 @@ Re-running the Databricks web hook preserves an independently enabled worker.
 |---|---|
 | `Cannot find module 'yaml'` / `'patchright'` on `pi` start | `~/local_code/pi-shared/install.sh` (runs locked `npm ci` per extension) |
 | duplicate `enterprise_*` tool errors | overlay wiring hook, e.g. `~/local_code/pi-databricks/setup.d/30-pi-wiring.sh` |
-| `pi-list: command not found` | re-run `./install.sh` (adds the `~/.zshrc` block), then open a new shell |
+| `pi --launcher-list` shows no aliases | Configure a gateway/model catalog, then `pi --launcher-refresh`; before that `pi` behaves as stock Pi |
 | doctor: model catalog/profile missing | Re-run the overlay's model hook; it repairs artifacts even after activation succeeded. |
 | doctor: AI Dev Kit source or Python imports missing | Run `pi-databricks/setup.d/26-enterprise-runtime.sh`. |
 | Browser-worker unavailable | Re-run the installer (or `browser-worker/install.sh`), then `pi-shared/bin/pi-browser-check`. Custom deployments can set `browserWorkerMcpUrl`/`browserWorkerTokenFile` or the corresponding environment overrides. |
@@ -277,7 +288,10 @@ bash -n install.sh
 The full suite requires pytest (the unittest command covers only `test_setup.py`).
 Tests use temporary Git repositories, an isolated HOME, and stub installers and
 service commands. They do not install packages, edit real profiles, contact
-providers, or require running services.
+providers, or require running services. `tests/test_bootstrap.py` covers the
+packaged `bin/pi` wrapper (stock argv/env, `PI_UPSTREAM_BIN` validation,
+delegating to the shared launcher after setup, and refusing unsafe/invalid
+receipts) against fake stock and launcher executables.
 
 ## License
 

@@ -1,4 +1,8 @@
-"""Installer contract tests: managed ~/.zshrc block and truthful exit status.
+"""Installer contract tests: legacy shell-wiring cleanup and truthful exit status.
+
+Fresh setups write no ~/.zshrc: the unified `pi` CLI needs no shell startup. The
+installer only removes recognized obsolete launcher lines it previously wrote,
+keeping a private backup, and never sources or executes a shell rc.
 
 install.sh is exercised with a temporary HOME, local Git repositories, a stub
 `pi` on PATH, and a stub doctor. Git transport is file-only; no network is used.
@@ -17,6 +21,8 @@ import pytest
 
 SETUP_ROOT = Path(__file__).resolve().parents[1]
 
+# The exact legacy wiring the installer recognizes and removes (it no longer
+# writes this block; the unified CLI needs no shell startup).
 RC_BLOCK = (
     "# >>> pi-setup generated launchers >>>\n"
     '[ -f "$HOME/.pi/generated/pi-launchers.zsh" ] && source "$HOME/.pi/generated/pi-launchers.zsh"\n'
@@ -48,6 +54,7 @@ def setup(tmp_path):
         "HOME": str(home),
         "PATH": str(fakebin),
         "PI_SETUP_CODE_ROOT": str(tmp_path / "code"),
+        "PI_SHARED_CLI_OUT": str(home / ".pi/launcher.json"),
         "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull,
         "GIT_CONFIG_COUNT": "1", "GIT_CONFIG_KEY_0": "core.hooksPath",
         "GIT_CONFIG_VALUE_0": os.devnull, "GIT_ALLOW_PROTOCOL": "file",
@@ -61,6 +68,7 @@ def setup(tmp_path):
     _exe(origin / "install.sh", "#!/bin/sh\nexit 0\n")
     (origin / "bin").mkdir()
     _exe(origin / "bin/pi-launchers-refresh", '#!/bin/sh\necho refreshed > "$HOME/refreshed"\n')
+    _exe(origin / "bin/pi-launch", '#!/bin/sh\necho refreshed > "$HOME/refreshed"\n')
     _git(fx, origin, "init", "-q", "-b", "main")
     _git(fx, origin, "add", ".")
     _git(fx, origin, "commit", "-qm", "fixture")
@@ -78,35 +86,62 @@ def _install(fx, *args, **extra) -> subprocess.CompletedProcess:
     return subprocess.run([str(fx["root"] / "install.sh"), *map(str, args)], env=env, capture_output=True, text=True, timeout=30)
 
 
-def test_fresh_zshrc_gets_one_managed_block(setup):
+def test_fresh_setup_does_not_create_zshrc(setup):
     r = _install(setup)
     assert r.returncode == 0, r.stdout + r.stderr
-    rc = (setup["home"] / ".zshrc").read_text()
-    assert rc == RC_BLOCK
+    assert not (setup["home"] / ".zshrc").exists()
 
 
-def test_existing_zshrc_preserved_and_backed_up(setup):
+def test_legacy_wiring_removed_and_user_content_preserved_with_backup(setup):
     rc = setup["home"] / ".zshrc"
-    rc.write_text("export FOO=1\nalias ll='ls -l'")  # no trailing newline on purpose
+    original = RC_BLOCK + "export FOO=1\nalias ll='ls -l'"
+    rc.write_text(original)  # no trailing newline on purpose
     r = _install(setup)
     assert r.returncode == 0, r.stderr
-    assert rc.read_text() == "export FOO=1\nalias ll='ls -l'\n" + RC_BLOCK
+    assert rc.read_text() == "export FOO=1\nalias ll='ls -l'"
     backups = list(setup["home"].glob(".zshrc.bak-*"))
-    assert len(backups) == 1 and backups[0].read_text() == "export FOO=1\nalias ll='ls -l'"
+    assert len(backups) == 1 and backups[0].read_text() == original
     assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
 
 
-def test_repeated_install_does_not_duplicate_block(setup):
+def test_recognized_multiline_source_removed_idempotently(setup):
+    rc = setup["home"] / ".zshrc"
+    legacy = '[ -f "$HOME/.pi/generated/pi-launchers.zsh" ] && ' + chr(92) + '\n  source "$HOME/.pi/generated/pi-launchers.zsh"\n'
+    original = 'export KEEP=yes\n' + legacy + 'alias mine="true"\n'
+    rc.write_text(original)
+    assert _install(setup).returncode == 0
+    assert rc.read_text() == 'export KEEP=yes\nalias mine="true"\n'
+    assert _install(setup).returncode == 0
+    backups = list(setup["home"].glob(".zshrc.bak-*"))
+    assert len(backups) == 1 and backups[0].read_text() == original
+
+
+def test_legacy_source_only_install_keeps_existing_wiring(setup):
+    rc = setup["home"] / ".zshrc"
+    rc.write_text(RC_BLOCK)
+    assert _install(setup, PI_SHARED_CLI_OUT="").returncode == 0
+    assert rc.read_text() == RC_BLOCK
+
+
+def test_modified_managed_block_preserved(setup):
+    rc = setup["home"] / ".zshrc"
+    original = RC_BLOCK.replace('&& source', '&& echo custom && source')
+    rc.write_text(original)
+    assert _install(setup).returncode == 0
+    assert rc.read_text() == original
+    assert not list(setup["home"].glob(".zshrc.bak-*"))
+
+
+def test_repeated_fresh_install_never_writes_or_backs_up_zshrc(setup):
     assert _install(setup).returncode == 0
     assert _install(setup).returncode == 0
-    rc = (setup["home"] / ".zshrc").read_text()
-    assert rc.count("pi-setup generated launchers >>>") == 1
+    assert not (setup["home"] / ".zshrc").exists()
     assert not list(setup["home"].glob(".zshrc.bak-*"))  # nothing pre-existing to back up
 
 
 def test_unmanaged_existing_source_line_is_left_alone(setup):
     rc = setup["home"] / ".zshrc"
-    line = 'source "$HOME/.pi/generated/pi-launchers.zsh"\n'
+    line = 'source "$HOME/custom/pi-launchers.zsh" # personal\n'
     rc.write_text(line)
     assert _install(setup).returncode == 0
     assert rc.read_text() == line
@@ -127,14 +162,14 @@ def test_doctor_failure_fails_install_and_never_prints_done(setup):
     assert "install did not complete" in r.stderr
 
 
-def test_success_message_points_at_pi_list_when_launchers_exist(setup):
+def test_success_message_points_at_unified_cli(setup):
     gen = setup["home"] / ".pi" / "generated"
     gen.mkdir(parents=True)
     (gen / "pi-launchers.zsh").write_text("pi-list() { :; }\n")
     r = _install(setup)
     assert r.returncode == 0
-    assert "pi-list" in r.stdout and "pi-sonnet" not in r.stdout
-    assert "after a gateway alias catalog is configured" in r.stdout
+    assert "pi --launcher-list" in r.stdout and "pi-sonnet" not in r.stdout
+    assert "Restart older shells" in r.stdout
 
 
 def test_omnigent_flag_only_adds_prerequisite_check(setup):
@@ -344,7 +379,7 @@ def test_shell_override_and_commented_source_do_not_execute_rc(setup):
     rc.write_text(original)
     result = _install(setup, PI_SETUP_ZSHRC=rc)
     assert result.returncode == 0, result.stdout + result.stderr
-    assert rc.read_text() == original + RC_BLOCK
+    assert rc.read_text() == original
     assert not (setup["home"] / ".zshrc").exists()
 
 

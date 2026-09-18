@@ -242,7 +242,8 @@ def setup(args):
         flags.append("--with-omnigent")
     print("Setup plan (Homebrew installation alone does not run this):")
     print(f"  Modules: {', '.join(modules)}\n  Writable module root: {code_root}")
-    print("  Install locked module dependencies, wire Pi profiles and ~/.zshrc, start selected services, run doctor.")
+    print("  Install locked module dependencies, wire Pi profiles and CLI routing, start selected services, run doctor.")
+    print("  Remove only recognized legacy shell wiring with a private backup; no new shell startup hooks.")
     print("  Existing selected services may restart. Unselected modules/services are not removed or stopped.")
     if "browser-worker" in modules:
         print("  Browser selection downloads Chromium. No LLM weights are downloaded.")
@@ -283,17 +284,19 @@ def apply_setup(args, code_root, modules, flags):
              "omnigent": args.with_omnigent}
     env = {**os.environ, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
     env.setdefault("PI_SHARED_BOOTSTRAP_LAUNCHERS", "1")
+    env.setdefault("PI_SHARED_CLI_OUT", str(Path.home() / ".pi/launcher.json"))
     # Fresh public setups include direct helpers. Preserve existing generated
     # selections and explicit canonical/legacy opt-outs on every rerun.
     launchers = Path(env.get("PI_SHARED_LAUNCHERS_OUT", str(Path.home() / ".pi/generated/pi-launchers.zsh"))).expanduser()
     legacy = Path.home() / ".pi/model-gateway/pi-launchers.zsh"
     preference = env.get("PI_SHARED_DIRECT_LAUNCHERS", env.get("PI_SHARED_LS99_EXTRAS", ""))
-    if not preference and not any(p.exists() or p.is_symlink() for p in (launchers, legacy)):
+    if not preference and not any(p.exists() or p.is_symlink() for p in (launchers, legacy, Path(env["PI_SHARED_CLI_OUT"]).expanduser())):
         env["PI_SHARED_DIRECT_LAUNCHERS"] = "1"
     state["bootstrap_launchers"] = env["PI_SHARED_BOOTSTRAP_LAUNCHERS"] == "1"
     state["settings"] = update_support.remember_settings(env)
     env.update(state["settings"])
-    state["launchers_file"] = str(launchers.resolve())
+    state["cli_file"] = env["PI_SHARED_CLI_OUT"]
+    state["launchers_file"] = str(launchers.resolve())  # legacy migration input, never evaluated
     state["recovery"] = args.recovery
     state["operation"] = "setup"
     write_state(state)
@@ -309,7 +312,7 @@ def apply_setup(args, code_root, modules, flags):
         discover_models(args.omlx_url)
     if args.omlx == "install":
         state["omlx_version"] = update_support.omlx_version()
-    state["launcher_refresh"] = state["bootstrap_launchers"] or launchers.is_file()
+    state["launcher_refresh"] = state["bootstrap_launchers"] or Path(state["cli_file"]).is_file() or launchers.is_file()
     state["runtime_versions"] = update_support.runtime_versions()
     state["revisions"] = update_support.revisions(code_root, modules)
     state["services"] = update_support.service_snapshot(modules, state["settings"], args.omlx)
@@ -320,6 +323,10 @@ def apply_setup(args, code_root, modules, flags):
     return 0
 
 
+def safe_path(value):
+    return isinstance(value, str) and bool(value) and not any(c in value for c in "\r\n\0") and Path(value).is_absolute()
+
+
 def read_state(allow_incomplete=False):
     path = state_path()
     if not path.is_file() or path.is_symlink():
@@ -327,12 +334,15 @@ def read_state(allow_incomplete=False):
     info = path.stat()
     if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077 or info.st_nlink != 1 or info.st_size > 65536:
         raise RuntimeError("Setup receipt must be owned by you with mode 0600.")
+    for directory in (path.parent, path.parent.parent):
+        info = directory.lstat()
+        if stat.S_ISLNK(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise RuntimeError("Unsafe setup receipt directory")
     data = json.loads(path.read_text())
     if (not isinstance(data, dict) or data.get("version") not in (1, 2)
             or not isinstance(data.get("modules"), list) or not data["modules"]
             or any(not isinstance(m, str) or m not in MODULES for m in data["modules"])
-            or not isinstance(data.get("code_root"), str) or not Path(data["code_root"]).is_absolute()
-            or not isinstance(data.get("agent_dir"), str) or not Path(data["agent_dir"]).is_absolute()
+            or not safe_path(data.get("code_root")) or not safe_path(data.get("agent_dir"))
             or ("bootstrap_launchers" in data and not isinstance(data["bootstrap_launchers"], bool))
             or ("omnigent" in data and not isinstance(data["omnigent"], bool))
             or data.get("status") not in {"incomplete", "module-checks-passed"}):
@@ -342,7 +352,8 @@ def read_state(allow_incomplete=False):
     if data.get("version") == 2:
         settings = data.get("settings")
         if (not isinstance(settings, dict) or any(k not in update_support.SETTINGS or not isinstance(v, str) for k, v in settings.items())
-                or not isinstance(data.get("launchers_file"), str) or not Path(data["launchers_file"]).is_absolute()
+                or not any(key in data for key in ("cli_file", "launchers_file"))
+                or any(not safe_path(data[key]) for key in ("cli_file", "launchers_file") if key in data)
                 or not isinstance(data.get("revisions", {}), dict) or not isinstance(data.get("services", {}), dict)):
             raise RuntimeError("Invalid remembered update settings")
         if update_support.remember_settings(settings) != settings:
@@ -369,8 +380,14 @@ def read_state(allow_incomplete=False):
 def status(require_omnigent=False):
     data = read_state()
     print("Checking last selected modules only; provider/model/recovery readiness is not implied.", flush=True)
-    env = {**os.environ, "PI_SETUP_CODE_ROOT": data["code_root"], "PI_CODING_AGENT_DIR": data["agent_dir"],
-           "PI_SHARED_BOOTSTRAP_LAUNCHERS": "1" if data.get("bootstrap_launchers") is True else "0"}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_"))}
+    env.update(data.get("settings", {}))
+    env.update(PI_SETUP_CODE_ROOT=data["code_root"], PI_CODING_AGENT_DIR=data["agent_dir"],
+               PI_SHARED_BOOTSTRAP_LAUNCHERS="1" if data.get("bootstrap_launchers") is True else "0")
+    if "cli_file" in data:
+        env.update(PI_SHARED_CLI_OUT=data["cli_file"], PI_LAUNCHER_CONFIG=data["cli_file"])
+    elif "launchers_file" in data:
+        env["PI_SHARED_LAUNCHERS_OUT"] = data["launchers_file"]
     command = [ROOT / "bin/doctor", *[arg for m in data["modules"] for arg in ("--module", m)]]
     if require_omnigent or data.get("omnigent", False):
         command.append("--require-omnigent")
@@ -467,15 +484,20 @@ def update(args):
             env = {**os.environ, "PI_SHARED_UPDATE_LOCK_FD": str(fd)}
             os.execve(launcher, [str(launcher), "update", "--modules-only"], env)
             return 0
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT"))}
         env.update(data["settings"])
         env.update(service_env)
         env.update(PI_SETUP_CODE_ROOT=data["code_root"], PI_SHARED_AGENT_DIR=data["agent_dir"],
                    PI_SHARED_BOOTSTRAP_LAUNCHERS="1" if data.get("bootstrap_launchers") else "0",
-                   PI_SHARED_LAUNCHERS_OUT=data["launchers_file"],
+                   PI_SHARED_CLI_OUT=data.get("cli_file", str(Path.home() / ".pi/launcher.json")),
                    PI_SETUP_REFRESH_LAUNCHERS="1" if data.get("launcher_refresh", True) else "0",
                    PI_SETUP_INSTALLED_REVISIONS=json.dumps(data.get("revisions", {})
                        if not retry_modules and data.get("runtime_versions") == update_support.runtime_versions() else {}))
+        if "launchers_file" in data:
+            env["PI_SHARED_LAUNCHERS_OUT"] = data["launchers_file"]
+        env["PI_LAUNCHER_CONFIG"] = env["PI_SHARED_CLI_OUT"]
+        data["cli_file"] = env["PI_SHARED_CLI_OUT"]
+        data["settings"]["PI_SHARED_CLI_OUT"] = data["cli_file"]
         data.update(status="incomplete", operation="update", phase="modules")
         write_state(data)
         if data.get("omlx") == "install":
@@ -503,13 +525,13 @@ def update(args):
         data["status"] = "module-checks-passed"
         data["phase"] = "verified"
         write_state(data)
-    print("Update verified. Generated commands refresh at the next interactive prompt; no manual pi-regen needed.")
+    print("Update verified. Use pi --launcher-list. Restart older shells to discard previously loaded launcher functions.")
     return 0
 
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.4")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.5")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["cloud", "local", "both", "later"])

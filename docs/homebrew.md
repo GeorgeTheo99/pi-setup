@@ -115,35 +115,53 @@ origin/ref/clean-worktree rules. No developer checkout is silently adopted,
 reset, overwritten or replaced. Selection is additive: skipping a module does
 not stop or uninstall an earlier selection.
 
-## Shell commands before model configuration
+## Unified `pi` CLI before model configuration
 
-Open a new shell after setup and run `pi-list`. Fresh setups include `pi-list`,
-`pi-regen`, `pi-shared-update`, `pi-restart`, `pi-default`, and `pi-openai` without
-requiring a gateway catalog. Sourcing defines commands, appends `~/.local/bin` to PATH once and registers
-an interactive local-file refresh hook. It never upgrades software, contacts
-models or starts services. Changed catalog/launcher data refreshes at the next
-prompt; manually edited model outputs require reconciliation rather than being
-overwritten. Existing generated direct-launcher choices and explicit
-`PI_SHARED_DIRECT_LAUNCHERS=0` opt-outs survive reruns.
+Fresh setups write no `~/.zshrc`: the packaged `pi` command is the entry point
+and needs no shell startup wiring. Until a setup receipt exists, `pi` runs stock
+Pi unchanged; afterwards it transparently routes configured model aliases through
+the trusted shared launcher, and otherwise still behaves as stock Pi. The alias
+catalog lives in `~/.pi/launcher.json` (override with `PI_LAUNCHER_CONFIG`):
 
-Until the alias export is configured, `pi-list` says so and no placeholder
-`models.json` is written. The future gateway profile is wired in advance.
-Configure the gateway to export the alias catalog at the path shown by `pi-list`,
-then run `pi-regen`; it creates model shortcuts and reloads them into the current
-shell. Direct Pi `/login` alone does not create gateway aliases. Missing or
-invalid input never replaces a configured launcher with an empty list.
+```bash
+pi --launcher-list       # configured model aliases (once a catalog exists)
+pi --launcher-check      # read-only, offline validation; no provider calls
+pi --launcher-refresh    # regenerate the config offline from its metadata
+pi --launcher-help       # all launcher subcommands
+pi <alias>               # launch that route on demand
+pi -- <prompt>           # bypass aliases; pi list stays the stock command
+```
 
-Setup opts into this compatible shared-installer feature with
-`PI_SHARED_BOOTSTRAP_LAUNCHERS=1`; setting it to `0` opts out. Status remembers
-whether command bootstrap was requested and verifies the shell/profile without
-requiring nonexistent gateway models. `--require-catalog` on the underlying
-doctor remains strict. New setup must be paired with a pi-shared version that
-supports bootstrap; missing generated launchers fail the requested check.
+Aliases resolve from the current config on every `pi <alias>` invocation, so
+newly added shortcuts appear and removed ones disappear with no regeneration
+step, no new shell, and no shell functions. None of the launcher commands upgrade
+software, contact models, or start services. Existing generated direct-launcher
+choices and explicit `PI_SHARED_DIRECT_LAUNCHERS=0` opt-outs survive reruns.
 
-`pi-restart` still requires an installed service. For oMLX it uses the existing
-server-ci manager, or oMLX's own app/Homebrew CLI when server-ci is absent. It
-never installs a service as a side effect of restart. `pi-shared-update` updates
-the writable shared-resource checkout, not Homebrew's packaged Pi runtime.
+Until the alias export is configured, `pi --launcher-list` is empty and no
+placeholder `models.json` is written. The future gateway profile is wired in
+advance. Configure the gateway to export the alias catalog to `cli_file`
+(default `~/.pi/launcher.json`), then run `pi --launcher-refresh`. Direct Pi
+`/login` alone does not create gateway aliases. Missing or invalid input never
+replaces a configured launcher with an empty list.
+
+Setup always opts into the unified CLI with `PI_SHARED_CLI_OUT=~/.pi/launcher.json`
+(and requests management bootstrap with `PI_SHARED_BOOTSTRAP_LAUNCHERS=1`; set it
+to `0` to opt out). The bootstrap `bin/pi` receives ordinary Pi argv with no extra
+transport separator, and reads the stock runtime from `PI_UPSTREAM_BIN` (an
+absolute stock executable set by the Homebrew wrapper); a sibling `pi-upstream`
+exposes the stock CLI directly. `--launcher-check`/`--launcher-refresh` are
+read-only/offline and need no stock runtime. Status remembers whether the CLI was
+selected and validates it without requiring nonexistent gateway models.
+`--require-catalog` on the underlying doctor remains strict. Legacy
+`pi-launchers.zsh` metadata is still syntax-checked and reported as migratable,
+but shell wiring is no longer required.
+
+For backward compatibility the installer still *removes* any recognized legacy
+launcher block or source line it previously added to `~/.zshrc`, keeping a
+private backup; it never writes or sources a shell rc. `PI_SETUP_NO_SHELL_RC=1`
+skips that cleanup, and custom/opted-out shells are honored. `pi-shared update`
+updates the writable shared-resource checkout, not Homebrew's packaged Pi runtime.
 
 ## oMLX: optional, never an implicit model download
 
@@ -219,10 +237,11 @@ the model test was skipped. Offline recovery is not ready until those checks pas
 
 Use **`pi-shared update`** for routine updates of the complete saved selection.
 It wraps the owning Homebrew package upgrade, re-executes the new CLI, updates
-selected modules/dependencies, regenerates commands and verifies the result.
-See [one-command updates](updates.md) for receipt migration, ownership checks,
-unchanged-service behavior, automatic prompt refresh and failure boundaries.
-The lower-level commands below remain available for explicit partial operations.
+selected modules/dependencies, regenerates the unified-CLI launcher config
+offline and verifies the result. See [one-command updates](updates.md) for
+receipt migration, ownership checks, unchanged-service behavior, the unified CLI
+refresh and failure boundaries. The lower-level commands below remain available
+for explicit partial operations.
 
 `~/.config/pi-shared/setup.json` is an owner-only receipt recording the selected
 module root, profile and modules, not credentials. It is marked incomplete before
