@@ -525,13 +525,13 @@ def update(args):
         data["status"] = "module-checks-passed"
         data["phase"] = "verified"
         write_state(data)
-    print("Update verified. Use pi --launcher-list. Restart older shells to discard previously loaded launcher functions.")
+    print("Update verified. Use pi models. Restart older shells to discard previously loaded launcher functions.")
     return 0
 
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.5")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.6")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["cloud", "local", "both", "later"])

@@ -77,8 +77,9 @@ def test_stock_pi_list_reaches_upstream_unchanged(env):
     assert r.stdout.strip() == "UPSTREAM argv=[list]"
 
 
-def test_launcher_flags_before_setup_are_a_clear_actionable_error(env):
-    r = run(env, "--launcher-list")
+@pytest.mark.parametrize("command", ["models", "--launcher-list"])
+def test_launcher_flags_before_setup_are_a_clear_actionable_error(env, command):
+    r = run(env, command)
     assert r.returncode == 1
     assert "launcher support is not installed" in r.stderr
     assert "pi-shared setup" in r.stderr
@@ -127,15 +128,39 @@ def test_receipt_delegates_to_shared_launcher_with_ordinary_argv(env):
     assert r.stdout.strip() == f"LAUNCH argv=[sonnet --foo] config=[{cli_file}]"
 
 
-def test_launcher_flags_after_setup_reach_shared_launcher(env):
+@pytest.mark.parametrize("command", ["models", "--launcher-list"])
+def test_launcher_flags_after_setup_reach_shared_launcher(env, command):
     code_root = shared_checkout(env)
     cli_file = env["home"] / ".pi/launcher.json"
     write_receipt(env, {"version": 2, "status": "module-checks-passed",
                         "modules": ["pi-shared"], "code_root": str(code_root),
                         "cli_file": str(cli_file)})
-    r = run(env, "--launcher-list")
+    r = run(env, command)
     assert r.returncode == 0, r.stderr
     assert r.stdout.strip() == f"LAUNCH argv=[--launcher-list] config=[{cli_file}]"
+
+
+@pytest.mark.parametrize("flag", ["--help", "-h"])
+def test_models_help_translates_for_older_shared_launchers(env, flag):
+    code_root = shared_checkout(env)
+    write_receipt(env, {"version": 2, "status": "module-checks-passed",
+                        "modules": ["pi-shared"], "code_root": str(code_root)})
+    result = run(env, "models", flag)
+    assert result.returncode == 0, result.stderr
+    assert "LAUNCH argv=[--launcher-help]" in result.stdout
+
+
+def test_models_with_extra_args_never_reaches_stock(env):
+    result = run(env, "models", "unexpected")
+    assert result.returncode == 1 and "Usage: pi models" in result.stderr
+    assert not result.stdout
+
+
+@pytest.mark.parametrize("args", [("--", "models"), ("--system-prompt", "models")])
+def test_models_literal_and_option_value_reach_stock(env, args):
+    result = run(env, *args)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == f"UPSTREAM argv=[{' '.join(args)}]"
 
 
 def test_receipt_without_cli_file_delegates_without_forcing_launcher_config(env):

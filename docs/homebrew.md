@@ -124,7 +124,7 @@ the trusted shared launcher, and otherwise still behaves as stock Pi. The alias
 catalog lives in `~/.pi/launcher.json` (override with `PI_LAUNCHER_CONFIG`):
 
 ```bash
-pi --launcher-list       # configured model aliases (once a catalog exists)
+pi models               # configured model aliases (also pi --launcher-list)
 pi --launcher-check      # read-only, offline validation; no provider calls
 pi --launcher-refresh    # regenerate the config offline from its metadata
 pi --launcher-help       # all launcher subcommands

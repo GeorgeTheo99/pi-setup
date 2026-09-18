@@ -78,7 +78,7 @@ recovers its own persisted settings. A replaced service identity is not adopted.
 New installs route model aliases through the packaged `pi` command instead of
 generated shell functions, so there is no `~/.zshrc` hook to load and no new
 shell to open. The alias catalog lives in `~/.pi/launcher.json` (override with
-`PI_LAUNCHER_CONFIG`). `pi --launcher-list` prints configured routes,
+`PI_LAUNCHER_CONFIG`). `pi models` (also `pi --launcher-list`) prints configured routes,
 `pi --launcher-check` validates the config read-only, and `pi --launcher-refresh`
 regenerates it offline from its recorded generation metadata. None of these
 contact status URLs, providers, GitHub, or model endpoints, and none run

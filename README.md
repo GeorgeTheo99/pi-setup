@@ -27,7 +27,7 @@ pi-shared setup --mode cloud --plan     # read-only preview; no downloads or com
 pi-shared setup --local                 # opt into oMLX options, now or later
 pi-shared status                        # selected module checks, not inference proof
 pi                                     # authenticate with /login and select /model
-pi --launcher-list                     # configured model aliases, once a catalog exists
+pi models                             # configured model aliases, once a catalog exists
 ```
 
 If Homebrew reports an **untrusted tap** (possibly followed by “invalid syntax
@@ -39,7 +39,7 @@ Fresh setup wires the **unified `pi` CLI** — no shell startup file is written.
 The packaged `pi` runs stock Pi until a setup receipt exists, then transparently
 routes configured model aliases through the shared launcher. Model aliases are
 stored in `~/.pi/launcher.json` (override with `PI_LAUNCHER_CONFIG`); list them
-with `pi --launcher-list`, validate with `pi --launcher-check`, regenerate
+with `pi models` (also `pi --launcher-list`), validate with `pi --launcher-check`, regenerate
 offline with `pi --launcher-refresh`, and see all subcommands with
 `pi --launcher-help`. `pi <alias>` launches that route, `pi -- <prompt>` bypasses
 aliases, and `pi list` remains the stock package command. Aliases appear once a
@@ -151,7 +151,7 @@ success banner over a broken environment.
 
 Fresh setups write **no `~/.zshrc`**: the unified `pi` CLI needs no shell startup
 wiring. Configured model aliases are available immediately as `pi <alias>` and
-`pi --launcher-list`. For backward compatibility, the installer still *removes*
+`pi models`. For backward compatibility, the installer still *removes*
 any recognized legacy launcher block/source line it previously added to
 `~/.zshrc`, keeping a private backup; it never writes or sources a shell rc. Set
 `PI_SETUP_NO_SHELL_RC=1` to skip that cleanup, or `PI_SETUP_ZSHRC` to target
