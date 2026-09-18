@@ -116,6 +116,38 @@ def test_recognized_multiline_source_removed_idempotently(setup):
     assert len(backups) == 1 and backups[0].read_text() == original
 
 
+@pytest.mark.parametrize("path", ["~/.pi/generated/pi-launchers.zsh", "~/.pi/model-gateway/pi-launchers.zsh"])
+@pytest.mark.parametrize("conditional", [False, True])
+def test_unquoted_tilde_source_removed_idempotently(setup, path, conditional):
+    rc = setup["home"] / ".zshrc"
+    source = f'[ -f {path} ] && source {path}' if conditional else f'source {path}'
+    original = 'export KEEP=yes\n' + source + '\n' + 'alias mine="true"\n'
+    rc.write_text(original)
+    result = _install(setup)
+    assert result.returncode == 0, result.stderr
+    assert rc.read_text() == 'export KEEP=yes\nalias mine="true"\n'
+    assert _install(setup).returncode == 0
+    backups = list(setup["home"].glob(".zshrc.bak-*"))
+    assert len(backups) == 1 and backups[0].read_text() == original
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+
+
+@pytest.mark.parametrize("line", [
+    '# source ~/.pi/generated/pi-launchers.zsh',
+    'source ~/.pi/generated/pi-launchers.zsh # custom',
+    '[ -f ~/.pi/generated/pi-launchers.zsh ] && echo custom && source ~/.pi/generated/pi-launchers.zsh',
+    RC_BLOCK.splitlines()[0] + '\n# custom block\nsource ~/.pi/generated/pi-launchers.zsh\n' + RC_BLOCK.splitlines()[-1],
+])
+def test_custom_tilde_source_content_preserved(setup, line):
+    rc = setup["home"] / ".zshrc"
+    original = line + '\n'
+    rc.write_text(original)
+    result = _install(setup)
+    assert result.returncode == 0, result.stderr
+    assert rc.read_text() == original
+    assert not list(setup["home"].glob(".zshrc.bak-*"))
+
+
 def test_legacy_source_only_install_keeps_existing_wiring(setup):
     rc = setup["home"] / ".zshrc"
     rc.write_text(RC_BLOCK)

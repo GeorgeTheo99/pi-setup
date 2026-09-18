@@ -285,6 +285,9 @@ legacy_paths = ('$HOME/.pi/generated/pi-launchers.zsh', '$HOME/.pi/model-gateway
 for path in legacy_paths:
     known.add(f'source "{path}"')
     known.add(f'[ -f "{path}" ] && source "{path}"')
+    tilde_path = path.replace('$HOME/', '~/', 1)
+    known.add(f'source {tilde_path}')
+    known.add(f'[ -f {tilde_path} ] && source {tilde_path}')
 # Modified marked blocks are user content: preserve them in their entirety.
 lines, inside = [], False
 pending = iter(text.splitlines(keepends=True))
