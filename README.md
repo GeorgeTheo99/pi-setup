@@ -110,8 +110,8 @@ inference; see its README and `docs/provider-onboarding.md`.
 
 ### Connect an existing remote gateway (direct)
 
-This is unreleased source functionality, not part of Homebrew 0.1.6. It requires
-a matching pi-setup release and the updated shared `pi-gateway` helper; confirm
+Available in Homebrew package 0.1.7 or newer, with the updated shared `pi-gateway`
+helper. Run `pi-shared update` on existing managed installs; confirm
 `existing-gateway` appears in `pi-shared setup --help` before using it.
 
 Use your existing gateway endpoint and an already-provisioned client key file:

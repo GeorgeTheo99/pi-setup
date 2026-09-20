@@ -121,9 +121,9 @@ silently be dropped by selecting another mode.
 
 ### Existing remote gateway
 
-Unreleased source feature: not included in Homebrew 0.1.6. Publish the matching
-pi-setup release and updated shared module before advertising this setup mode
-as available from the stable tap.
+Available in Homebrew package 0.1.7 or newer with the updated shared module.
+Use `pi-shared update` to update an existing managed installation before
+selecting this mode.
 
 ```bash
 pi-shared setup --mode existing-gateway \
