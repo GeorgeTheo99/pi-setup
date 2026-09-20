@@ -26,6 +26,18 @@ config's generation metadata is authoritative for model endpoint/output settings
 and direct-shortcut choices. Remembered custom paths must be absolute (a leading
 `~` is expanded during setup).
 
+Direct `existing-gateway` setups additionally record `external_gateway`: the
+normalized endpoint, absolute key-file reference and explicit private-HTTP
+opt-in. This optional schema-2 field is backward-compatible; key contents are
+never copied into receipts. Update preserves that connection and its managed
+outputs and invokes shared `pi-gateway check` **offline only**. It does not fetch
+the remote catalog, provision credentials, claim remote service ownership,
+restart remote services, or test remote readiness/inference. To explicitly
+refresh authenticated discovery, rerun `pi-shared setup --mode existing-gateway --yes`
+(repeat optional module selections); omitted connection arguments and
+saved custom paths are retained. `status` uses the same offline connection
+check. Connection/check failures cannot produce a completed receipt.
+
 Receipts from 0.1.2 and earlier lack some of this information. They remain readable
 by `status`, but `update` refuses to guess their missing settings. Run setup once
 with the new version, supplying original custom overrides where applicable.

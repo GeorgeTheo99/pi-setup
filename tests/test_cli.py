@@ -22,6 +22,7 @@ loader.exec_module(cli)
 
 def options(**kwargs):
     values = dict(mode="later", local=False, omlx=None, omlx_url=None, recovery="skip",
+                  gateway_url=None, gateway_key_file=None, allow_private_http=None,
                   without_browser=True, with_search=False, with_omnigent=False, update=False, yes=True, plan=False)
     return argparse.Namespace(**(values | kwargs))
 

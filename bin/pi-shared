@@ -24,8 +24,11 @@ import urllib.parse
 import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
+# Help/plans must not create bytecode artifacts in a source checkout or package.
+sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "lib"))
 import update_support
+import existing_gateway
 
 FORMULA = "georgetheo99/tap/pi-shared"
 MODULES = {"pi-shared", "model-gateway", "browser-worker", "local_web_search"}
@@ -193,17 +196,53 @@ def guidance(args, code_root):
 
 def setup(args):
     interactive = sys.stdin.isatty() and not args.yes and not args.plan
+    if state_path().is_symlink():
+        raise RuntimeError("Refusing unsafe setup state file.")
+    previous = read_state(allow_incomplete=True) if state_path().exists() else None
+    saved_gateway = previous.get("external_gateway") if previous else None
+    if saved_gateway and args.mode is None and not args.local:
+        args.mode = "existing-gateway"
     if args.local:
         if args.mode not in {None, "local"}:
             raise RuntimeError("--local cannot be combined with a different --mode.")
         args.mode = "local"
     if args.mode is None:
         if not interactive:
-            raise RuntimeError("Specify --mode cloud|local|both|later in non-interactive mode.")
+            raise RuntimeError("Specify --mode cloud|local|both|later|existing-gateway in non-interactive mode.")
         args.mode = choose("How would you like to run models?", {
             "cloud": "Cloud providers — subscription login or API keys",
             "local": "Local models with oMLX — Apple Silicon Mac required for installation",
-            "both": "Both cloud and local models", "later": "Configure models later"})
+            "both": "Both cloud and local models", "later": "Configure models later",
+            "existing-gateway": "Connect directly to an existing remote model-gateway (no local gateway)"})
+    remote = args.mode == "existing-gateway"
+    if saved_gateway and not remote:
+        raise RuntimeError("An external gateway is already selected; refusing to discard it or mix it with local gateway setup. Reconcile the connection manually first.")
+    if remote and previous and ("model-gateway" in previous["modules"] or previous.get("omlx")):
+        raise RuntimeError("A local gateway/oMLX was previously selected; refusing to mix it with an external gateway. Reconcile the existing setup manually first.")
+    if not remote and (args.gateway_url is not None or args.gateway_key_file is not None or args.allow_private_http):
+        raise RuntimeError("Gateway connection options require --mode existing-gateway.")
+    gateway = None
+    if remote:
+        saved = saved_gateway or {}
+        url = args.gateway_url if args.gateway_url is not None else saved.get("url")
+        key_file = args.gateway_key_file if args.gateway_key_file is not None else saved.get("key_file")
+        if not url and interactive:
+            url = input("Existing gateway base URL (HTTPS preferred; no credentials): ").strip()
+            if url.lower() == "cancel":
+                raise KeyboardInterrupt
+        if not key_file and interactive:
+            key_file = input("Absolute path to your existing private gateway key file (0600; not the key): ").strip()
+            if key_file.lower() == "cancel":
+                raise KeyboardInterrupt
+        if not url or not key_file:
+            raise RuntimeError("--mode existing-gateway requires --gateway-url and --gateway-key-file (or a saved connection).")
+        allow_http = args.allow_private_http
+        if allow_http is None:
+            allow_http = saved.get("allow_private_http", False) if url.rstrip("/").removesuffix("/v1") == saved.get("url") else False
+        if url.startswith("http://") and not allow_http and interactive:
+            allow_http = choose("HTTP sends the gateway key without TLS. Is this a trusted private/Tailscale endpoint?", {
+                "no": "Do not connect; use HTTPS", "yes": "Explicitly allow private HTTP"}) == "yes"
+        gateway = existing_gateway.connection(url, key_file, allow_http)
     local = args.mode in {"local", "both"}
     if not local and (args.omlx or args.omlx_url):
         raise RuntimeError("oMLX options require --mode local/both or --local.")
@@ -223,10 +262,20 @@ def setup(args):
             "skip": "Skip (default; no recovery download)",
             "guide": "Show pi-fallback prototype preparation instructions"}) if interactive else "skip"
 
-    code_root = Path(os.environ.get("PI_SETUP_CODE_ROOT", str(Path.home() / ".local/share/pi-shared/modules"))).expanduser().resolve()
+    env = dict(os.environ)
+    if saved_gateway:
+        # A rerun is an explicit catalog refresh, not a reset to default paths.
+        for key, value in previous["settings"].items():
+            env.setdefault(key, value)
+        env.setdefault("PI_SETUP_CODE_ROOT", previous["code_root"])
+        env.setdefault("PI_SHARED_AGENT_DIR", previous["agent_dir"])
+        env.setdefault("PI_SHARED_CLI_OUT", previous["cli_file"])
+    if remote and env.get("PI_SHARED_BOOTSTRAP_LAUNCHERS") == "0":
+        raise RuntimeError("Existing gateway setup requires CLI bootstrap; remove PI_SHARED_BOOTSTRAP_LAUNCHERS=0.")
+    code_root = Path(env.get("PI_SETUP_CODE_ROOT", str(Path.home() / ".local/share/pi-shared/modules"))).expanduser().resolve()
     flags = ["--minimal"]
     modules = ["pi-shared"]
-    if args.mode != "later":
+    if args.mode not in {"later", "existing-gateway"}:
         modules.append("model-gateway")
     if not args.without_browser:
         modules.append("browser-worker")
@@ -236,7 +285,7 @@ def setup(args):
     if args.update:
         flags.append("--update")
     if args.with_omnigent:
-        agent_dir = Path(os.environ.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve()
+        agent_dir = Path(env.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve()
         if agent_dir != (Path.home() / ".pi/agent").resolve():
             raise RuntimeError("Omnigent compatibility currently requires the standard ~/.pi/agent profile; no configuration was changed.")
         flags.append("--with-omnigent")
@@ -251,6 +300,12 @@ def setup(args):
         print("  No browser or LLM weights are downloaded.")
     print("  Command: " + shlex.join([str(ROOT / "install.sh"), *flags]))
     print(f"  oMLX: {args.omlx or 'not selected'}; recovery: {args.recovery}")
+    if gateway:
+        print(f"  Direct external gateway: {gateway['url']}")
+        print(f"  Existing key file reference: {gateway['key_file']} (owner-only 0600; contents never copied into the receipt)")
+        print(f"  Private HTTP explicitly allowed: {gateway['allow_private_http']}")
+        print("  Authenticated catalog read: GET /v1/models/canonical; no inference requests.")
+        print("  No local gateway or oMLX service installed; no remote service operations or credential provisioning.")
     if args.with_search:
         print("  Search requires a pre-provisioned owner-only Brave API key; see the search module README.")
     if args.plan:
@@ -272,17 +327,24 @@ def setup(args):
         if input("Apply this plan? [y/N] ").strip().lower() not in {"y", "yes"}:
             print("Cancelled; no installation changes made.")
             return 0
+    if gateway:
+        existing_gateway.check_key_file(gateway)
     with update_lock():
-        return apply_setup(args, code_root, modules, flags)
+        current = read_state(allow_incomplete=True) if state_path().exists() else None
+        if current != previous:
+            raise RuntimeError("Setup receipt changed during approval; rerun to review the current selection.")
+        return apply_setup(args, code_root, modules, flags, env, gateway)
 
 
-def apply_setup(args, code_root, modules, flags):
-    agent_dir = str(Path(os.environ.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve())
+def apply_setup(args, code_root, modules, flags, env, gateway=None):
+    agent_dir = str(Path(env.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve())
     state = {"version": 2, "status": "incomplete", "code_root": str(code_root),
              "modules": modules, "agent_dir": agent_dir,
              "mode": args.mode, "omlx": args.omlx, "omlx_url": args.omlx_url,
              "omnigent": args.with_omnigent}
-    env = {**os.environ, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
+    if gateway:
+        state["external_gateway"] = gateway
+    env = {**env, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
     env.setdefault("PI_SHARED_BOOTSTRAP_LAUNCHERS", "1")
     env.setdefault("PI_SHARED_CLI_OUT", str(Path.home() / ".pi/launcher.json"))
     # Fresh public setups include direct helpers. Preserve existing generated
@@ -296,11 +358,16 @@ def apply_setup(args, code_root, modules, flags):
     state["settings"] = update_support.remember_settings(env)
     env.update(state["settings"])
     state["cli_file"] = env["PI_SHARED_CLI_OUT"]
+    if gateway:
+        env["PI_LAUNCHER_CONFIG"] = state["cli_file"]
     state["launchers_file"] = str(launchers.resolve())  # legacy migration input, never evaluated
     state["recovery"] = args.recovery
     state["operation"] = "setup"
     write_state(state)
     run([ROOT / "install.sh", *flags], env=env)
+    if gateway:
+        run(existing_gateway.command(state, "connect"), env=env)
+        print("External gateway catalog configured. Remote readiness and inference NOT verified. Use pi models to list aliases.")
     if args.omlx == "install":
         run(["brew", "tap", "jundot/omlx", "https://github.com/jundot/omlx"])
         run(["brew", "install", OMLX_FORMULA])
@@ -372,6 +439,15 @@ def read_state(allow_incomplete=False):
                        or len(v) != 40 or any(c not in "0123456789abcdef" for c in v)
                        for k, v in data.get("revisions", {}).items())):
             raise RuntimeError("Invalid update selection/revisions")
+    if "external_gateway" in data:
+        existing_gateway.validate_saved(data["external_gateway"])
+        if (data["version"] != 2 or data.get("mode") != "existing-gateway" or "cli_file" not in data
+                or "model-gateway" in data["modules"] or data.get("omlx") or data.get("omlx_url")
+                or "omlx" in data.get("services", {})
+                or data["settings"].get("PI_SHARED_CLI_OUT", data["cli_file"]) != data["cli_file"]):
+            raise RuntimeError("Invalid external gateway selection; local gateway/oMLX cannot be mixed with it")
+    elif data.get("mode") == "existing-gateway":
+        raise RuntimeError("Missing saved external gateway connection; rerun setup with explicit connection options")
     if data["status"] == "incomplete" and not allow_incomplete:
         raise RuntimeError("Previous setup did not complete; rerun its plan to repair. Completed installs were not rolled back.")
     return data
@@ -392,6 +468,9 @@ def status(require_omnigent=False):
     if require_omnigent or data.get("omnigent", False):
         command.append("--require-omnigent")
     run(command, env=env)
+    if data.get("external_gateway"):
+        run(existing_gateway.command(data, "check"), env=env)
+        print("External gateway configuration checked OFFLINE; remote reachability, authentication and inference NOT tested.")
     if data.get("omlx"):
         print("oMLX is separately managed; status does not test its service or model inference.")
     return 0
@@ -434,6 +513,9 @@ def update(args):
         raise RuntimeError("Initial setup is incomplete; finish setup before updating")
     print("Update plan: retain saved modules, paths, models and preferences.")
     print("  Selected: " + ", ".join(data["modules"]))
+    if data.get("external_gateway"):
+        print(f"  Preserve external gateway: {data['external_gateway']['url']}; check configuration OFFLINE only.")
+        print("  No remote catalog refresh or remote service operations. Rerun setup to explicitly refresh discovery.")
     if data.get("omlx") == "install":
         print("  Also update owned Homebrew oMLX; restart it only if its installed version changes.")
     print("  Update owned CLI/runtime; apply changed selected services; refresh dependencies/shortcuts; verify.")
@@ -519,6 +601,8 @@ def update(args):
         if data.get("omnigent", False):
             command.append("--with-omnigent")
         run(command, env=env)
+        if data.get("external_gateway"):
+            run(existing_gateway.command(data, "check"), env=env)
         data["runtime_versions"] = update_support.runtime_versions()
         data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])
         data["services"] = update_support.service_snapshot(data["modules"], data["settings"], data.get("omlx"))
@@ -534,7 +618,11 @@ def main():
     parser.add_argument("--version", action="version", version="pi-shared setup 0.1.6")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
-    p.add_argument("--mode", choices=["cloud", "local", "both", "later"])
+    p.add_argument("--mode", choices=["cloud", "local", "both", "later", "existing-gateway"])
+    p.add_argument("--gateway-url", help="Existing remote gateway base URL (HTTPS preferred; optional /v1)")
+    p.add_argument("--gateway-key-file", help="Absolute path to an existing owner-only 0600 key file; never a literal key")
+    p.add_argument("--allow-private-http", action="store_true", default=None,
+                   help="Explicitly trust private/Tailscale HTTP for existing-gateway; the key is sent without TLS")
     p.add_argument("--local", action="store_true", help="Shortcut for --mode local; oMLX remains opt-in")
     p.add_argument("--omlx", choices=["existing", "install", "guide"], help="Default: prompt, or guide in non-interactive mode")
     p.add_argument("--omlx-url", type=loopback_url, help="Explicit numeric loopback OpenAI URL for existing oMLX")

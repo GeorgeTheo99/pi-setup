@@ -77,6 +77,7 @@ than trusting the whole tap.
 | Local | Same modules; oMLX existing/install/guidance choice | Model selection/download, reviewed Pi/gateway route, actual inference test |
 | Both | Cloud and local choices | Both sets of model configuration |
 | Later | Shared resources and browser-worker | Model/provider setup later |
+| Existing gateway | Shared resources and browser-worker; direct remote catalog connection, no local gateway/oMLX | Existing endpoint and private client key file; inference remains untested |
 
 `--with-omnigent` optionally requires Omnigent native-Pi prerequisites and the
 standard Pi profile. It does not install Omnigent, launch its server/session, or
@@ -113,7 +114,47 @@ Homebrew Cellar. `PI_SETUP_CODE_ROOT` overrides that location for both setup and
 the receipt. Existing checkouts must satisfy the original installer's exact
 origin/ref/clean-worktree rules. No developer checkout is silently adopted,
 reset, overwritten or replaced. Selection is additive: skipping a module does
-not stop or uninstall an earlier selection.
+not stop or uninstall an earlier selection. For this reason, existing-gateway
+setup refuses a receipt with a previously selected local gateway/oMLX; reconcile
+that installation manually before switching. A saved external connection cannot
+silently be dropped by selecting another mode.
+
+### Existing remote gateway
+
+Unreleased source feature: not included in Homebrew 0.1.6. Publish the matching
+pi-setup release and updated shared module before advertising this setup mode
+as available from the stable tap.
+
+```bash
+pi-shared setup --mode existing-gateway \
+  --gateway-url https://gateway.example \
+  --gateway-key-file "$HOME/.config/model-gateway/client.key" --plan
+# Replace --plan with --yes after review.
+```
+
+The wizard also offers this direct-connection choice. Supply a gateway base URL
+(optional trailing `/v1`) and an existing absolute key-file path: regular,
+non-symlink, owned by you, mode `0600`. Setup never accepts a literal credential
+argument, provisions a key, or puts its contents in the receipt. HTTPS is the
+default safety boundary; HTTP requires `--allow-private-http` and a numeric
+private/Tailscale IP (hostnames require HTTPS). Trust the endpoint before sending
+it your client key, especially over HTTP without TLS.
+
+Approval names the endpoint/key-file reference and authorizes only authenticated
+catalog discovery (`GET /v1/models/canonical`), not inference. The shared
+`pi-gateway connect` helper configures the existing managed CLI/model outputs
+after bootstrap, respecting `PI_SHARED_CLI_OUT`. No local model-gateway/oMLX is
+installed or started; no remote service operations or federation are performed.
+Browser-worker remains selected unless `--without-browser` is given.
+
+A failed connection leaves the receipt incomplete. Rerun setup in
+`existing-gateway` mode to retry or explicitly refresh the catalog; saved
+endpoint/key-file/HTTP choices and custom paths are retained when omitted.
+Optional module flags still follow normal setup selection rules. Use
+`pi-shared update` for routine maintenance: it retains the connection and runs
+`pi-gateway check` offline, never remote discovery. Status uses the same offline
+connection check and does not claim remote reachability, authentication or
+inference readiness.
 
 ## Unified `pi` CLI before model configuration
 
@@ -206,7 +247,9 @@ model on your behalf. Configure a reviewed Pi/gateway route with exact model
 ID and verified limits, then test an actual response. **The gateway's cloud
 onboarding generator requires HTTPS and must not be used for a local HTTP
 endpoint.** Automatic local route generation is not part of this release.
-Authenticated/remote discovery also remains manual; never embed keys in URLs.
+Authenticated/remote **oMLX** discovery remains manual; never embed keys in URLs.
+The separate existing-gateway mode above connects to an already-configured
+model-gateway, not directly to oMLX.
 
 ## Search and recovery
 
@@ -246,7 +289,7 @@ for explicit partial operations.
 `~/.config/pi-shared/setup.json` is an owner-only receipt recording the selected
 module root, profile and modules, not credentials. It is marked incomplete before
 installation and completed only after the selected module checks and requested
-oMLX action succeed. `pi-shared status` refuses incomplete/unsafe receipts and
+oMLX action or external-gateway connection succeed. `pi-shared status` refuses incomplete/unsafe receipts and
 re-runs the existing doctor for the last selected modules. It executes trusted
 extension registration checks; it is not a static/sandboxed inspection. It does
 not prove authentication, inference, browser execution, oMLX health or recovery

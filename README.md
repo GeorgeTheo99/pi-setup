@@ -9,6 +9,9 @@ A successful check is not proof that provider authentication or inference works.
 ## Homebrew entry point: `pi-shared`
 
 The public command is **`pi-shared`**; this repository owns its orchestration.
+Start with the [main pi-shared README](https://github.com/GeorgeTheo99/pi-shared)
+for the user-facing install → connect → use → update journey. This repository
+is the installer backend, not a separately running sidecar.
 The companion `homebrew-tap` repository owns the formula, not another installer.
 See [Homebrew setup](docs/homebrew.md) for installation, local testing,
 service ownership, and the release gate. The tap is
@@ -104,6 +107,40 @@ Optional shared tools still need their own prerequisites.
 `model-info.json` catalog when absent. A passing `/health` means only that the
 gateway process answers. Onboard a provider/model separately before expecting
 inference; see its README and `docs/provider-onboarding.md`.
+
+### Connect an existing remote gateway (direct)
+
+This is unreleased source functionality, not part of Homebrew 0.1.6. It requires
+a matching pi-setup release and the updated shared `pi-gateway` helper; confirm
+`existing-gateway` appears in `pi-shared setup --help` before using it.
+
+Use your existing gateway endpoint and an already-provisioned client key file:
+
+```bash
+pi-shared setup --mode existing-gateway \
+  --gateway-url https://gateway.example \
+  --gateway-key-file "$HOME/.config/model-gateway/client.key" --plan
+# Review the plan, then replace --plan with --yes to connect.
+```
+
+The key file must be an absolute, non-symlink, owner-only `0600` regular file.
+Never pass the key itself in arguments or embed it in the URL. HTTPS is preferred;
+trusted private/Tailscale **numeric IP** HTTP endpoints require the explicit
+`--allow-private-http` opt-in. A trailing `/v1` is accepted and normalized.
+
+This selects shared resources and browser-worker (omit browsing with
+`--without-browser`), **not a local gateway or oMLX**. Setup reads the remote
+`/v1/models/canonical` catalog with your existing key and configures `pi models`
+and `pi <alias>`; it neither provisions credentials nor changes remote services,
+uses federation, downloads weights, or tests inference. Failed discovery leaves
+setup incomplete. The receipt stores only the endpoint, key-file reference and
+HTTP opt-in. Rerunning `pi-shared setup --mode existing-gateway --yes` reuses the
+saved connection and explicitly refreshes discovery; repeat optional module
+selections as needed. Setup refuses to silently discard an external connection
+or mix it with a previously selected local gateway/oMLX.
+
+`pi-shared update` preserves the connection and checks it **offline only**;
+`pi-shared status` also checks local configuration, not remote readiness.
 
 ### Optional Omnigent compatibility
 
