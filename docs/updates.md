@@ -102,7 +102,13 @@ recovers its own persisted settings. A replaced service identity is not adopted.
 New installs route model aliases through the packaged `pi` command instead of
 generated shell functions, so there is no `~/.zshrc` hook to load and no new
 shell to open. The alias catalog lives in `~/.pi/launcher.json` (override with
-`PI_LAUNCHER_CONFIG`). `pi models` (also `pi --launcher-list`) prints configured routes,
+`PI_LAUNCHER_CONFIG`). With package 0.1.9+ and an updated shared module,
+`pi models` groups aliases by local/cloud/direct routing and accepts `--local`,
+`--cloud`, `--direct`, `--verbose`, and `--json`. `pi --launcher-list` retains
+legacy tab-separated routes. The trusted shared capability manifest declares
+`modelsCommand: 1` before the bootstrap forwards the command unchanged; older
+modules retain legacy list/help translation and reject new options with update
+guidance. Unconfigured `models` never reaches stock Pi as a prompt.
 `pi --launcher-check` validates the config read-only, and `pi --launcher-refresh`
 regenerates it offline from its recorded generation metadata. None of these
 contact status URLs, providers, GitHub, or model endpoints, and none run

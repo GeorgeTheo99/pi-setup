@@ -14,6 +14,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import shutil
 import subprocess
 import sys
 
@@ -152,7 +153,83 @@ def test_models_help_translates_for_older_shared_launchers(env, flag):
 
 def test_models_with_extra_args_never_reaches_stock(env):
     result = run(env, "models", "unexpected")
-    assert result.returncode == 1 and "Usage: pi models" in result.stderr
+    assert result.returncode == 1 and "launcher support is not installed" in result.stderr
+    assert not result.stdout
+
+
+def enable_models_command(code_root, content=None):
+    path = code_root / "pi-shared/lib/pi-launcher-capabilities.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"modelsCommand": 1}) if content is None else content)
+    return path
+
+
+@pytest.mark.parametrize("args", [(), ("--json",), ("--local", "--verbose"), ("--cloud",),
+                                 ("--direct", "--json"), ("--help",), ("-h",), ("unexpected",)])
+def test_capable_launcher_owns_models_command_and_flags(env, args):
+    code_root = shared_checkout(env)
+    enable_models_command(code_root)
+    write_receipt(env, {"version": 2, "status": "module-checks-passed",
+                        "modules": ["pi-shared"], "code_root": str(code_root)})
+    result = run(env, "models", *args)
+    assert result.returncode == 0, result.stderr
+    assert f"LAUNCH argv=[{' '.join(('models', *args))}]" in result.stdout
+    assert "UPSTREAM" not in result.stdout
+
+
+def test_capable_launcher_keeps_legacy_tsv_command(env):
+    code_root = shared_checkout(env)
+    enable_models_command(code_root)
+    write_receipt(env, {"version": 2, "status": "module-checks-passed",
+                        "modules": ["pi-shared"], "code_root": str(code_root)})
+    result = run(env, "--launcher-list")
+    assert result.returncode == 0 and "LAUNCH argv=[--launcher-list]" in result.stdout
+
+
+@pytest.mark.parametrize("content", [None, "{}", '{"modelsCommand":true}', '{"modelsCommand":2}'])
+def test_old_or_unknown_capability_rejects_new_flags_without_exec(env, content):
+    code_root = shared_checkout(env)
+    if content is not None:
+        enable_models_command(code_root, content)
+    write_receipt(env, {"version": 2, "status": "module-checks-passed",
+                        "modules": ["pi-shared"], "code_root": str(code_root)})
+    result = run(env, "models", "--json")
+    assert result.returncode == 1 and "pi-shared update" in result.stderr
+    assert not result.stdout
+    result = run(env, "models")
+    assert result.returncode == 0 and "LAUNCH argv=[--launcher-list]" in result.stdout
+
+
+@pytest.mark.parametrize("mutation", ["malformed", "shape", "symlink", "writable", "parent-symlink"])
+def test_unsafe_or_invalid_capabilities_do_not_execute(env, mutation):
+    code_root = shared_checkout(env)
+    path = enable_models_command(code_root)
+    if mutation == "malformed":
+        path.write_text("not json")
+    elif mutation == "shape":
+        path.write_text("[]")
+    elif mutation == "symlink":
+        target = path.with_name("target.json")
+        path.rename(target)
+        path.symlink_to(target)
+    elif mutation == "parent-symlink":
+        target = path.parent.with_name("elsewhere")
+        path.parent.rename(target)
+        path.parent.symlink_to(target, target_is_directory=True)
+    else:
+        path.chmod(0o666)
+    write_receipt(env, {"version": 2, "status": "module-checks-passed",
+                        "modules": ["pi-shared"], "code_root": str(code_root)})
+    result = run(env, "models", "--json")
+    assert result.returncode == 1 and not result.stdout
+
+
+def test_unconfigured_capability_file_is_not_delegation_authority(env):
+    candidate = env["home"] / ".local/share/pi-shared/modules"
+    shared_checkout(env, code_root=candidate)
+    enable_models_command(candidate)
+    result = run(env, "models", "--json")
+    assert result.returncode == 1 and "launcher support is not installed" in result.stderr
     assert not result.stdout
 
 
@@ -197,6 +274,53 @@ def test_direct_uses_saved_native_profile_without_overriding_explicit_profile(en
     result = run(env, "openai", **overrides)
     assert result.returncode == 0, result.stderr
     assert result.stdout == overrides.get("PI_CODING_AGENT_DIR", str(profile) if mode == "direct" else "")
+
+
+@pytest.mark.skipif(not os.environ.get("PI_SHARED_TEST_ROOT"), reason="opt-in sibling shared integration")
+@pytest.mark.parametrize("mode", ["direct", "cloud"])
+def test_real_shared_grouped_models_through_package_bootstrap(env, mode):
+    source = Path(os.environ["PI_SHARED_TEST_ROOT"]).resolve()
+    code_root = shared_checkout(env)
+    shared = code_root / "pi-shared"
+    (shared / "lib").mkdir()
+    for name in ("bin/pi-launch", "lib/pi_cli.py", "lib/pi_catalog.py", "lib/pi-launcher-capabilities.json"):
+        shutil.copy2(source / name, shared / name)
+    env["env"]["PATH"] = str(Path(sys.executable).parent) + os.pathsep + env["env"]["PATH"]
+    config = env["home"] / ".pi/launcher.json"
+    write_receipt(env, {"version": 2, "status": "module-checks-passed", "mode": mode,
+                        "modules": ["pi-shared"], "code_root": str(code_root),
+                        "cli_file": str(config), "agent_dir": str(env["home"] / "native")})
+    if mode == "direct":
+        assert run(env, "--launcher-init-direct").returncode == 0
+    else:
+        aliases = env["home"] / "aliases.json"
+        aliases.write_text(json.dumps({
+            "local-model": {"alias": "local", "name": "Local Model"},
+            "cloud:remote": {"alias": "cloud", "name": "Cloud Model", "provider_model_id": "cloud-id",
+                             "pi": {"aliases": ["synonym"]}},
+        }))
+        result = subprocess.run([sys.executable, str(shared / "lib/pi_catalog.py"), "--offline",
+                                 "--aliases", str(aliases), "--cli-out", str(config),
+                                 "--models-out", str(env["home"] / "gateway/models.json"),
+                                 "--pi-agent-dir", str(env["home"] / "gateway"), "--direct-launchers"],
+                                env=env["env"], capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+    result = run(env, "models", "--json")
+    assert result.returncode == 0, result.stderr
+    data = json.loads(result.stdout)
+    expected_groups = {"direct"} if mode == "direct" else {"local", "cloud", "direct"}
+    assert {row["group"] for row in data["models"]} == expected_groups
+    assert "DIRECT · subscription" in run(env, "models").stdout
+    for group in ("local", "cloud", "direct"):
+        filtered = run(env, "models", "--" + group, "--json")
+        assert filtered.returncode == 0, filtered.stderr
+        assert json.loads(filtered.stdout)["models"] == [r for r in data["models"] if r["group"] == group]
+    assert "Route: openai-codex/" in run(env, "models", "--verbose").stdout
+    assert "openai\topenai-codex/" in run(env, "--launcher-list").stdout
+    assert run(env, "openai", "--default").returncode == 0
+    defaults = json.loads(run(env, "models", "--json").stdout)
+    assert [r["alias"] for r in defaults["models"] if r["default"]] == ["openai"]
+    assert run(env, "models", "--invalid").returncode == 1
 
 
 # --- Unsafe / invalid receipts ----------------------------------------------

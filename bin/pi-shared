@@ -669,7 +669,7 @@ def update(args):
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.8")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.9")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],

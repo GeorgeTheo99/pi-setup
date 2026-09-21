@@ -202,13 +202,22 @@ the trusted shared launcher, and otherwise still behaves as stock Pi. The alias
 catalog lives in `~/.pi/launcher.json` (override with `PI_LAUNCHER_CONFIG`):
 
 ```bash
-pi models               # configured model aliases (also pi --launcher-list)
+pi models                # grouped model aliases (package 0.1.9+ and updated module)
+pi models --cloud --json  # filtered structured output
+pi --launcher-list       # legacy tab-separated alias/route output
 pi --launcher-check      # read-only, offline validation; no provider calls
 pi --launcher-refresh    # regenerate the config offline from its metadata
 pi --launcher-help       # all launcher subcommands
 pi <alias>               # launch that route on demand
 pi -- <prompt>           # bypass aliases; pi list stays the stock command
 ```
+
+The trusted shared `lib/pi-launcher-capabilities.json` declares `modelsCommand: 1`
+so the package can delegate `models` and all its options unchanged. Older shared
+modules keep legacy list/help translation and refuse new flags with update
+guidance. No shared launcher means an actionable setup error, never a stock model
+prompt. Run `pi-shared update` to update both layers; a module-only update cannot
+change the old Homebrew 0.1.8 bootstrap's unconditional translation.
 
 Aliases resolve from the current config on every `pi <alias>` invocation, so
 newly added shortcuts appear and removed ones disappear with no regeneration
