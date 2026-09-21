@@ -29,6 +29,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "lib"))
 import update_support
 import existing_gateway
+import direct_setup
 
 FORMULA = "georgetheo99/tap/pi-shared"
 MODULES = {"pi-shared", "model-gateway", "browser-worker", "local_web_search"}
@@ -176,8 +177,13 @@ def write_state(value):
 
 
 def guidance(args, code_root):
+    if args.mode == "direct":
+        print("Native providers: run pi, then /login (or configure a supported provider key) and /model.")
+        print("Use pi --provider <provider> --model <model-id> for explicit selection; native Pi owns authentication and model settings.")
+        print("Only the existing OpenAI direct shortcut is provided when enabled; other native providers use stock Pi.")
+        print("No gateway catalog/profile or oMLX is configured. Authentication and inference NOT verified.")
     if args.mode in {"cloud", "both"}:
-        print("Cloud models: run pi, then /login (or configure your own provider key) and /model.")
+        print("Gateway-enabled cloud setup: onboard gateway providers separately; Pi /login and /model also remain available.")
     if args.mode in {"local", "both"}:
         print(f"oMLX installation/model management: {OMLX_GUIDE}")
         print("No model weights downloaded by pi-shared. Review size and memory fit before any download.")
@@ -200,21 +206,34 @@ def setup(args):
         raise RuntimeError("Refusing unsafe setup state file.")
     previous = read_state(allow_incomplete=True) if state_path().exists() else None
     saved_gateway = previous.get("external_gateway") if previous else None
-    if saved_gateway and args.mode is None and not args.local:
-        args.mode = "existing-gateway"
+    saved_direct = previous and previous.get("mode") == "direct"
+    if args.mode is None and not args.local:
+        if saved_gateway:
+            args.mode = "existing-gateway"
+        elif saved_direct:
+            args.mode = "direct"
     if args.local:
         if args.mode not in {None, "local"}:
             raise RuntimeError("--local cannot be combined with a different --mode.")
         args.mode = "local"
     if args.mode is None:
         if not interactive:
-            raise RuntimeError("Specify --mode cloud|local|both|later|existing-gateway in non-interactive mode.")
+            raise RuntimeError("Specify --mode direct|cloud|local|both|later|existing-gateway in non-interactive mode.")
         args.mode = choose("How would you like to run models?", {
-            "cloud": "Cloud providers — subscription login or API keys",
-            "local": "Local models with oMLX — Apple Silicon Mac required for installation",
-            "both": "Both cloud and local models", "later": "Configure models later",
+            "direct": "Native Pi providers — no model-gateway or oMLX",
+            "cloud": "Gateway-enabled cloud providers — provider onboarding required",
+            "local": "Gateway-enabled local models with oMLX — Apple Silicon Mac required for installation",
+            "both": "Gateway-enabled cloud and local models", "later": "Configure models later",
             "existing-gateway": "Connect directly to an existing remote model-gateway (no local gateway)"})
     remote = args.mode == "existing-gateway"
+    direct = args.mode == "direct"
+    if direct and previous and (previous.get("mode") in {"cloud", "local", "both", "existing-gateway"}
+            or "model-gateway" in previous["modules"] or "external_gateway" in previous
+            or previous.get("omlx") or previous.get("omlx_url") or previous.get("omlx_version")
+            or any(name in previous.get("services", {}) for name in ("model-gateway", "omlx"))):
+        raise RuntimeError("A gateway/oMLX was previously selected; refusing migration to direct mode. Reconcile the existing setup manually first; no services were removed.")
+    if saved_direct and not direct:
+        raise RuntimeError("Direct-only setup is already selected; reconcile it manually before selecting gateway-enabled setup.")
     if saved_gateway and not remote:
         raise RuntimeError("An external gateway is already selected; refusing to discard it or mix it with local gateway setup. Reconcile the connection manually first.")
     if remote and previous and ("model-gateway" in previous["modules"] or previous.get("omlx")):
@@ -263,19 +282,27 @@ def setup(args):
             "guide": "Show pi-fallback prototype preparation instructions"}) if interactive else "skip"
 
     env = dict(os.environ)
-    if saved_gateway:
-        # A rerun is an explicit catalog refresh, not a reset to default paths.
+    if saved_gateway or saved_direct:
+        # A rerun preserves selected paths and policy, not a reset to defaults.
         for key, value in previous["settings"].items():
             env.setdefault(key, value)
         env.setdefault("PI_SETUP_CODE_ROOT", previous["code_root"])
         env.setdefault("PI_SHARED_AGENT_DIR", previous["agent_dir"])
         env.setdefault("PI_SHARED_CLI_OUT", previous["cli_file"])
+    if direct:
+        env["PI_SHARED_DIRECT_ONLY"] = "1"
+        env.setdefault("PI_SHARED_CLI_OUT", str(Path.home() / ".pi/launcher.json"))
+        if not env["PI_SHARED_CLI_OUT"] or env.get("PI_SHARED_BOOTSTRAP_LAUNCHERS", "1") != "1":
+            raise RuntimeError("Direct setup requires nonempty PI_SHARED_CLI_OUT and PI_SHARED_BOOTSTRAP_LAUNCHERS=1.")
+        env.update(update_support.remember_settings(env))
+    elif env.get("PI_SHARED_DIRECT_ONLY") == "1":
+        raise RuntimeError("PI_SHARED_DIRECT_ONLY=1 requires --mode direct.")
     if remote and env.get("PI_SHARED_BOOTSTRAP_LAUNCHERS") == "0":
         raise RuntimeError("Existing gateway setup requires CLI bootstrap; remove PI_SHARED_BOOTSTRAP_LAUNCHERS=0.")
     code_root = Path(env.get("PI_SETUP_CODE_ROOT", str(Path.home() / ".local/share/pi-shared/modules"))).expanduser().resolve()
     flags = ["--minimal"]
     modules = ["pi-shared"]
-    if args.mode not in {"later", "existing-gateway"}:
+    if args.mode not in {"later", "existing-gateway", "direct"}:
         modules.append("model-gateway")
     if not args.without_browser:
         modules.append("browser-worker")
@@ -300,6 +327,9 @@ def setup(args):
         print("  No browser or LLM weights are downloaded.")
     print("  Command: " + shlex.join([str(ROOT / "install.sh"), *flags]))
     print(f"  oMLX: {args.omlx or 'not selected'}; recovery: {args.recovery}")
+    if direct:
+        print("  Direct-only policy: native Pi providers; no gateway catalog reads or gateway profile generation.")
+        print("  Shared installer must support --direct-only; generated policy is verified before completion.")
     if gateway:
         print(f"  Direct external gateway: {gateway['url']}")
         print(f"  Existing key file reference: {gateway['key_file']} (owner-only 0600; contents never copied into the receipt)")
@@ -365,6 +395,8 @@ def apply_setup(args, code_root, modules, flags, env, gateway=None):
     state["operation"] = "setup"
     write_state(state)
     run([ROOT / "install.sh", *flags], env=env)
+    if args.mode == "direct":
+        direct_setup.verify(state["cli_file"], code_root / "pi-shared")
     if gateway:
         run(existing_gateway.command(state, "connect"), env=env)
         print("External gateway catalog configured. Remote readiness and inference NOT verified. Use pi models to list aliases.")
@@ -439,6 +471,18 @@ def read_state(allow_incomplete=False):
                        or len(v) != 40 or any(c not in "0123456789abcdef" for c in v)
                        for k, v in data.get("revisions", {}).items())):
             raise RuntimeError("Invalid update selection/revisions")
+    if data.get("mode") == "direct":
+        if (data["version"] != 2 or data.get("settings", {}).get("PI_SHARED_DIRECT_ONLY") != "1"
+                or data.get("bootstrap_launchers") is not True or not safe_path(data.get("cli_file"))
+                or data["settings"].get("PI_SHARED_CLI_OUT") != data["cli_file"]
+                or data["settings"].get("PI_SHARED_AGENT_DIR") != data["agent_dir"]
+                or data.get("launcher_refresh", True) is not True
+                or "model-gateway" in data["modules"] or "external_gateway" in data
+                or data.get("omlx") or data.get("omlx_url") or "omlx_version" in data
+                or any(name in data.get("services", {}) for name in ("model-gateway", "omlx"))):
+            raise RuntimeError("Invalid direct-only setup receipt; gateway/oMLX and disabled CLI bootstrap are not allowed")
+    elif data["version"] == 2 and data["settings"].get("PI_SHARED_DIRECT_ONLY") == "1":
+        raise RuntimeError("Direct-only policy requires a direct setup receipt")
     if "external_gateway" in data:
         existing_gateway.validate_saved(data["external_gateway"])
         if (data["version"] != 2 or data.get("mode") != "existing-gateway" or "cli_file" not in data
@@ -455,6 +499,8 @@ def read_state(allow_incomplete=False):
 
 def status(require_omnigent=False):
     data = read_state()
+    if data.get("mode") == "direct":
+        direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
     print("Checking last selected modules only; provider/model/recovery readiness is not implied.", flush=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_"))}
     env.update(data.get("settings", {}))
@@ -471,6 +517,8 @@ def status(require_omnigent=False):
     if data.get("external_gateway"):
         run(existing_gateway.command(data, "check"), env=env)
         print("External gateway configuration checked OFFLINE; remote reachability, authentication and inference NOT tested.")
+    if data.get("mode") == "direct":
+        print("Direct-only configuration checked OFFLINE; native provider authentication and inference NOT tested.")
     if data.get("omlx"):
         print("oMLX is separately managed; status does not test its service or model inference.")
     return 0
@@ -513,6 +561,8 @@ def update(args):
         raise RuntimeError("Initial setup is incomplete; finish setup before updating")
     print("Update plan: retain saved modules, paths, models and preferences.")
     print("  Selected: " + ", ".join(data["modules"]))
+    if data.get("mode") == "direct":
+        print("  Preserve direct-only policy and native Pi authentication/model settings; no gateway catalog/profile or oMLX.")
     if data.get("external_gateway"):
         print(f"  Preserve external gateway: {data['external_gateway']['url']}; check configuration OFFLINE only.")
         print("  No remote catalog refresh or remote service operations. Rerun setup to explicitly refresh discovery.")
@@ -529,6 +579,8 @@ def update(args):
         data = read_state(allow_incomplete=True)
         if data["version"] != 2 or (data["status"] == "incomplete" and data.get("operation") != "update"):
             raise RuntimeError("Setup receipt changed; finish setup before updating")
+        if data.get("mode") == "direct":
+            direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
         service_env = update_support.service_environment(data)
         omlx_url = update_support.omlx_url() if data.get("omlx") == "install" else None
         retry_modules = data["status"] == "incomplete" and data.get("phase") == "modules"
@@ -601,6 +653,8 @@ def update(args):
         if data.get("omnigent", False):
             command.append("--with-omnigent")
         run(command, env=env)
+        if data.get("mode") == "direct":
+            direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
         if data.get("external_gateway"):
             run(existing_gateway.command(data, "check"), env=env)
         data["runtime_versions"] = update_support.runtime_versions()
@@ -618,7 +672,8 @@ def main():
     parser.add_argument("--version", action="version", version="pi-shared setup 0.1.7")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
-    p.add_argument("--mode", choices=["cloud", "local", "both", "later", "existing-gateway"])
+    p.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],
+                   help="direct: native Pi providers, no gateway/oMLX; cloud/local/both: gateway-enabled setup")
     p.add_argument("--gateway-url", help="Existing remote gateway base URL (HTTPS preferred; optional /v1)")
     p.add_argument("--gateway-key-file", help="Absolute path to an existing owner-only 0600 key file; never a literal key")
     p.add_argument("--allow-private-http", action="store_true", default=None,

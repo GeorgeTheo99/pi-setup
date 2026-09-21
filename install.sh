@@ -56,6 +56,15 @@ log()  { printf '\033[1;34m[pi-setup]\033[0m %s\n' "$*"; }
 warn() { printf '\033[1;33m[pi-setup]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[1;31m[pi-setup]\033[0m %s\n' "$*" >&2; exit 1; }
 
+if [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ]; then
+  [ -n "${PI_SHARED_CLI_OUT:-}" ] || die "Direct-only setup requires nonempty PI_SHARED_CLI_OUT"
+  [ "${PI_SHARED_BOOTSTRAP_LAUNCHERS:-1}" = 1 ] || die "Direct-only setup requires PI_SHARED_BOOTSTRAP_LAUNCHERS=1"
+  case ",$ONLY_MODULES," in *,model-gateway,*) die "Direct-only setup cannot select model-gateway" ;; esac
+  for name in "${WITH_MODULES[@]:-}"; do
+    [ "$name" != model-gateway ] || die "Direct-only setup cannot select model-gateway"
+  done
+fi
+
 command -v git >/dev/null || die "git is required"
 command -v python3 >/dev/null || die "python3 is required (used to parse manifest.yaml)"
 if [ "$REQUIRE_OMNIGENT" -eq 1 ]; then
@@ -115,6 +124,9 @@ PY
 
 wants_module() {
   local tier="$1" name="$2"
+  if [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ] && [ "$name" = model-gateway ]; then
+    return 1
+  fi
   if [ -n "$ONLY_MODULES" ]; then
     case ",$ONLY_MODULES," in *",$name,"*) return 0 ;; *) return 1 ;; esac
   fi
@@ -214,12 +226,22 @@ PY
       return 0
     fi
   fi
+  if [ "$name" = pi-shared ] && [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ]; then
+    # Older launchers reject this operation without reaching stock Pi. Never
+    # let an unsupported installer mutate gateway artifacts before detection.
+    (unset PI_UPSTREAM_BIN; PI_LAUNCHER_CONFIG="$PI_SHARED_CLI_OUT" "$dest/bin/pi-launch" --launcher-check-direct) \
+      || die "Shared launcher lacks compatible direct-only setup or existing routing requires reconciliation"
+  fi
   log "Installing $name..."
   if [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" = pi-shared ] && [ -z "${PI_SHARED_CLI_OUT:-}" ]; then
     # Keep the current launcher metadata/profile selection for the final refresh.
     (cd "$dest" && ./install.sh --no-catalog) || die "$name installer failed"
   else
     (cd "$dest" && ./install.sh) || die "$name installer failed"
+  fi
+  if [ "$name" = pi-shared ] && [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ]; then
+    python3 -B "$SETUP_DIR/lib/direct_setup.py" "$PI_SHARED_CLI_OUT" "$dest" \
+      || die "Shared installer did not establish direct-only policy; installation incomplete"
   fi
   [ "$name" != browser-worker ] || BROWSER_WORKER_INSTALLED=1
   DOCTOR_ARGS+=(--module "$name")
@@ -371,6 +393,11 @@ if [ "$UPDATE_CHANGED" -eq 1 ] && [ "${PI_SETUP_REFRESH_LAUNCHERS:-1}" = 1 ]; th
     "$CODE_ROOT/pi-shared/bin/pi-launchers-refresh" --launcher "${PI_SHARED_LAUNCHERS_OUT:-$LAUNCHERS}" \
       || die "Launcher refresh failed; selected module updates were not rolled back"
   fi
+fi
+
+if [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ]; then
+  python3 -B "$SETUP_DIR/lib/direct_setup.py" "$PI_SHARED_CLI_OUT" "$CODE_ROOT/pi-shared" \
+    || die "Direct-only policy verification failed; installation incomplete"
 fi
 
 log "Running doctor..."

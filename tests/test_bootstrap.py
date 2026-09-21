@@ -184,6 +184,21 @@ def test_incomplete_receipt_status_still_delegates(env):
     assert r.stdout.startswith("LAUNCH argv=[haiku]")
 
 
+@pytest.mark.parametrize("mode", ["direct", "cloud"])
+@pytest.mark.parametrize("explicit", [False, True])
+def test_direct_uses_saved_native_profile_without_overriding_explicit_profile(env, mode, explicit):
+    code_root = shared_checkout(env)
+    _exe(code_root / "pi-shared/bin/pi-launch", 'printf "%s" "$PI_CODING_AGENT_DIR"')
+    profile = env["home"] / "custom-native-profile"
+    write_receipt(env, {"version": 2, "status": "module-checks-passed", "mode": mode,
+                       "modules": ["pi-shared"], "code_root": str(code_root),
+                       "agent_dir": str(profile)})
+    overrides = {"PI_CODING_AGENT_DIR": str(env["home"] / "explicit-profile")} if explicit else {}
+    result = run(env, "openai", **overrides)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout == overrides.get("PI_CODING_AGENT_DIR", str(profile) if mode == "direct" else "")
+
+
 # --- Unsafe / invalid receipts ----------------------------------------------
 
 def test_world_readable_receipt_is_refused(env):

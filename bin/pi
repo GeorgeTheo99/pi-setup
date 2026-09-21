@@ -50,6 +50,10 @@ def main():
         shared = absolute(data.get("code_root")) / "pi-shared"
         if "cli_file" in data:
             os.environ.setdefault("PI_LAUNCHER_CONFIG", str(absolute(data["cli_file"])))
+        if data.get("mode") == "direct":
+            # Native auth/models/packages live in the profile selected by setup.
+            # Explicit caller profiles still win; gateway modes remain unchanged.
+            os.environ.setdefault("PI_CODING_AGENT_DIR", str(absolute(data.get("agent_dir"))))
     else:
         # The conventional path alone is not authority to execute a checkout.
         # Source installations can explicitly configure it as their Pi package.

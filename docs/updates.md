@@ -26,7 +26,20 @@ config's generation metadata is authoritative for model endpoint/output settings
 and direct-shortcut choices. Remembered custom paths must be absolute (a leading
 `~` is expanded during setup).
 
-Direct `existing-gateway` setups additionally record `external_gateway`: the
+Unreleased source `setup --mode direct` keeps schema 2 and records
+`PI_SHARED_DIRECT_ONLY=1` in settings. This mode is **not in installed Homebrew
+0.1.7** and requires matching shared-module source. Update/status reject receipts
+that mix this policy with gateway/oMLX selections, inconsistent paths or disabled
+CLI bootstrap. Updates preserve the policy and custom paths rather than adopting
+calling-shell overrides. Launcher generation metadata is checked offline before
+updates/status and after installation/update: it must be direct-only, without
+catalog, model output or gateway profile arguments. Older shared installers that
+ignore the policy cannot complete successfully. Native Pi authentication/model
+settings remain native; no provider calls are made. Setup reruns reuse saved paths
+and shortcut opt-outs; prior gateway/oMLX selections, including incomplete
+receipts, require manual reconciliation rather than automatic migration/removal.
+
+`existing-gateway` setups additionally record `external_gateway`: the
 normalized endpoint, absolute key-file reference and explicit private-HTTP
 opt-in. This optional schema-2 field is backward-compatible; key contents are
 never copied into receipts. Update preserves that connection and its managed

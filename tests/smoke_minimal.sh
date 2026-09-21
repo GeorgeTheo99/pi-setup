@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # Explicit network-enabled integration smoke. Uses npm registries and a trusted
 # local pi-shared Git HEAD, but no providers, models, browsers or service installs.
-# Usage: tests/smoke_minimal.sh /absolute/path/to/pi-shared
+# Usage: tests/smoke_minimal.sh /absolute/path/to/pi-shared [later|direct]
 #
 # Verifies the unified-CLI contract end to end: setup writes ~/.pi/launcher.json
 # (no ~/.zshrc), status passes, and the shared launcher answers its read-only /
 # offline management flags (--launcher-list / --launcher-check / --launcher-refresh)
 # against the generated config. No shell startup is sourced and no model is run.
 set -euo pipefail
-[ "$#" -eq 1 ] || { echo "Usage: $0 /absolute/path/to/trusted/pi-shared" >&2; exit 2; }
+[ "$#" -ge 1 ] && [ "$#" -le 2 ] || { echo "Usage: $0 /absolute/path/to/trusted/pi-shared [later|direct]" >&2; exit 2; }
+SETUP_MODE="${2:-later}"
+case "$SETUP_MODE" in later|direct) ;; *) echo "Expected later or direct" >&2; exit 2 ;; esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SHARED="$(cd "$1" && pwd)"
 REF="$(git -C "$SHARED" rev-parse --verify HEAD)"
@@ -41,14 +43,19 @@ env -i HOME="$STAGE/home" TMPDIR="$STAGE/tmp" \
   npm_config_userconfig=/dev/null npm_config_globalconfig="$STAGE/home/empty-npmrc" \
   npm_config_registry="${npm_config_registry:-https://registry.npmjs.org/}" \
   PI_OFFLINE=1 PI_SKIP_VERSION_CHECK=1 PYTHONDONTWRITEBYTECODE=1 \
-  SHARED="$SHARED" \
+  SHARED="$SHARED" SETUP_MODE="$SETUP_MODE" \
   /bin/bash -c '
     set -euo pipefail
     stage="$1"
     (cd "$stage/runtime" && npm ci --ignore-scripts --no-audit --no-fund)
     # New setups always opt into the unified CLI at ~/.pi/launcher.json.
-    "$stage/setup/bin/pi-shared" setup --mode later --without-browser --yes
+    "$stage/setup/bin/pi-shared" setup --mode "$SETUP_MODE" --without-browser --yes
     "$stage/setup/bin/pi-shared" status
+    # Exercise the actual packaged dispatcher without a model request.
+    export PI_UPSTREAM_BIN="$stage/runtime/node_modules/.bin/pi"
+    "$stage/setup/bin/pi" --version
+    "$stage/setup/bin/pi" models
+    "$stage/setup/bin/pi" openai --default
     cli="$HOME/.pi/launcher.json"
     launch="$HOME/.local/share/pi-shared/modules/pi-shared/bin/pi-launch"
     # --launcher-check / --launcher-refresh / --launcher-list are read-only or
@@ -75,11 +82,20 @@ assert not (home / ".omlx").exists(), "unexpected oMLX state"
 assert not (home / ".pi-fallback").exists(), "unexpected recovery state"
 assert not (home / ".cache/ms-playwright").exists(), "unexpected browser download"
 assert not (home / ".pi-omlx/agent/models.json").exists(), "unexpected placeholder models"
+if os.environ["SETUP_MODE"] == "direct":
+    assert receipt["mode"] == "direct", receipt
+    assert receipt["settings"]["PI_SHARED_DIRECT_ONLY"] == "1", receipt
+    config = json.loads((home / ".pi/launcher.json").read_text())
+    assert "--direct-only" in config["generation"]["args"], config
+    assert not (home / ".pi-omlx").exists(), "direct setup created a gateway profile"
+    assert not (home / ".pi/agent/models.json").exists(), "direct setup took ownership of native models"
+    assert not (Path(receipt["code_root"]) / "model-gateway").exists(), "gateway installed in direct mode"
 PY
     "$stage/setup/bin/pi-shared" update </dev/null
     "$stage/setup/bin/pi-shared" update --modules-only </dev/null
     "$stage/setup/bin/pi-shared" status
     # The offline management flags still work after the update-driven refresh.
     PI_LAUNCHER_CONFIG="$HOME/.pi/launcher.json" "$launch" --launcher-check
-    echo "MINIMAL_SETUP_SMOKE_OK: setup, unified-CLI config, offline launcher management, source re-exec update, repeated module update and status passed; no service/model calls, no ~/.zshrc"
+    "$stage/setup/bin/pi" models
+    echo "MINIMAL_SETUP_SMOKE_OK ($SETUP_MODE): setup, unified-CLI config, offline launcher management, source re-exec update, repeated module update and status passed; no service/model calls, no ~/.zshrc"
   ' smoke "$STAGE"

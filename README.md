@@ -108,7 +108,39 @@ Optional shared tools still need their own prerequisites.
 gateway process answers. Onboard a provider/model separately before expecting
 inference; see its README and `docs/provider-onboarding.md`.
 
-### Connect an existing remote gateway (direct)
+### Native providers without a gateway (unreleased source)
+
+**`setup --mode direct` is unreleased source functionality, not available in the
+installed Homebrew 0.1.7 package.** It requires matching shared-module source
+with direct-only support; an older shared installer fails closed rather than
+silently completing gateway-enabled setup. No release/version bump is included.
+Use isolated development checkouts/profiles, not production module directories.
+
+```bash
+./bin/pi-shared setup --mode direct --without-browser --plan
+# Review, then replace --plan with --yes in an isolated development environment.
+```
+
+Direct mode selects shared resources plus browser-worker by default; use
+`--without-browser` to omit browsing. It does not install model-gateway/oMLX,
+read a gateway catalog, or generate a gateway profile/model file. Native Pi
+retains authentication and model settings: use `/login`, `/model`, or
+`pi --provider <provider> --model <model-id>`. The only bundled native shortcut
+is the existing OpenAI preset; `PI_SHARED_DIRECT_LAUNCHERS=0` disables it. Other
+native providers need no new launcher preset. Authentication/inference are not
+verified by setup or status.
+
+The schema-2 receipt saves `PI_SHARED_DIRECT_ONLY=1`; reruns retain custom paths,
+and update/status verify direct-only launcher metadata offline. A nonempty
+`PI_SHARED_CLI_OUT` and enabled launcher bootstrap are required. Previously
+selected local/remote gateway or oMLX receipts, including incomplete ones, are
+refused before mutations. This is not a migration/uninstall command: existing
+services/configuration are never removed. See [setup choices](docs/homebrew.md#setup-choices).
+
+`cloud`, `local`, and `both` retain their gateway-enabled behavior; they are not
+synonyms for native direct-provider setup.
+
+### Connect an existing remote gateway
 
 Available in Homebrew package 0.1.7 or newer, with the updated shared `pi-gateway`
 helper. Run `pi-shared update` on existing managed installs; confirm
@@ -228,8 +260,9 @@ bin/doctor --smoke-model sonnet         # opt into one real completion via pi-so
   --launcher-check` — a read-only, offline validation of the launcher config that
   contacts no provider and needs no stock runtime. Use `--require-catalog` to
   additionally require a generated `~/.pi-omlx/agent` profile with a nonempty
-  model catalog. A fresh gateway install without a catalog remains a valid
-  direct-provider setup; no overlay is mandatory. Legacy `pi-launchers.zsh`
+  model catalog. A fresh gateway install without a catalog still permits native
+  Pi usage; it is not the explicit direct-only policy described above. No overlay
+  is mandatory. Legacy `pi-launchers.zsh`
   metadata is still syntax-checked and reported as migratable, but shell wiring
   is no longer required. An explicitly selected pi-databricks overlay is required
   to load as a package when the generated profile is checked.

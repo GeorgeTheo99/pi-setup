@@ -73,9 +73,10 @@ than trusting the whole tap.
 
 | Choice | What setup selects | What still requires user configuration |
 |---|---|---|
-| Cloud | Shared resources, gateway, browser-worker | Pi subscription login/API key; gateway provider onboarding if desired |
-| Local | Same modules; oMLX existing/install/guidance choice | Model selection/download, reviewed Pi/gateway route, actual inference test |
-| Both | Cloud and local choices | Both sets of model configuration |
+| Direct (unreleased source) | Shared resources and browser-worker; native Pi providers, no gateway/oMLX | Native Pi `/login` or supported key and `/model`; inference remains untested |
+| Cloud | Shared resources, gateway, browser-worker (gateway-enabled) | Gateway provider onboarding; native Pi auth is separate |
+| Local | Same gateway-enabled modules; oMLX existing/install/guidance choice | Model selection/download, reviewed Pi/gateway route, actual inference test |
+| Both | Gateway-enabled cloud and local choices | Both sets of model configuration |
 | Later | Shared resources and browser-worker | Model/provider setup later |
 | Existing gateway | Shared resources and browser-worker; direct remote catalog connection, no local gateway/oMLX | Existing endpoint and private client key file; inference remains untested |
 
@@ -118,6 +119,43 @@ not stop or uninstall an earlier selection. For this reason, existing-gateway
 setup refuses a receipt with a previously selected local gateway/oMLX; reconcile
 that installation manually before switching. A saved external connection cannot
 silently be dropped by selecting another mode.
+
+### Direct native providers (unreleased source)
+
+`./bin/pi-shared setup --mode direct` is source-only, unreleased functionality;
+**installed Homebrew 0.1.7 does not support it**. Matching shared-module direct-only
+support is required. Test with isolated development paths/profiles; do not point
+production profiles at development branches. This change does not publish or
+bump a package version.
+
+```bash
+./bin/pi-shared setup --mode direct --plan
+./bin/pi-shared setup --mode direct --without-browser --plan
+```
+
+After reviewing the plan, `--yes` applies the selected modules. Browser selection,
+search opt-in and Omnigent prerequisites are unchanged. Direct mode adds no
+model-gateway or oMLX, reads no gateway catalog, and creates no gateway profile
+or generated gateway `models.json`. It leaves native Pi authentication/model
+settings with Pi: `/login`, `/model`, or `pi --provider <provider> --model <model-id>`.
+The existing OpenAI preset is the only bundled direct-provider shortcut; use
+stock Pi for other native providers. `PI_SHARED_DIRECT_LAUNCHERS=0` disables the
+shortcut without disabling native provider support.
+
+The receipt persists `PI_SHARED_DIRECT_ONLY=1`. Setup reruns retain omitted
+custom module/profile/CLI paths and direct-shortcut choices; optional module flags
+still follow normal setup selection. Update retains the saved policy regardless
+of calling-shell overrides, and status checks it offline. Generated metadata must
+contain only `--direct-only --shared-dir <path>` and one direct-shortcut flag:
+older shared versions cannot silently ignore the policy and report completion.
+Direct mode requires nonempty `PI_SHARED_CLI_OUT` and rejects
+`PI_SHARED_BOOTSTRAP_LAUNCHERS=0` before installation.
+
+A prior local/remote gateway or oMLX receipt, even incomplete, blocks direct
+setup before mutation. Switching a direct receipt to gateway-enabled setup also
+requires manual reconciliation. No services, credentials or existing gateway
+configuration are removed; this is not a migration tool. Setup/status do not
+verify native provider authentication or inference.
 
 ### Existing remote gateway
 
@@ -179,16 +217,17 @@ step, no new shell, and no shell functions. None of the launcher commands upgrad
 software, contact models, or start services. Existing generated direct-launcher
 choices and explicit `PI_SHARED_DIRECT_LAUNCHERS=0` opt-outs survive reruns.
 
-Until the alias export is configured, `pi --launcher-list` is empty and no
-placeholder `models.json` is written. The future gateway profile is wired in
-advance. Configure the gateway to export the alias catalog to `cli_file`
+For gateway-enabled setup, until the alias export is configured,
+`pi --launcher-list` is empty and no placeholder `models.json` is written. The
+future gateway profile is wired in advance. Unreleased direct mode deliberately
+skips that profile/catalog wiring and lists only enabled native shortcuts. Configure the gateway to export the alias catalog to `cli_file`
 (default `~/.pi/launcher.json`), then run `pi --launcher-refresh`. Direct Pi
 `/login` alone does not create gateway aliases. Missing or invalid input never
 replaces a configured launcher with an empty list.
 
 Setup always opts into the unified CLI with `PI_SHARED_CLI_OUT=~/.pi/launcher.json`
 (and requests management bootstrap with `PI_SHARED_BOOTSTRAP_LAUNCHERS=1`; set it
-to `0` to opt out). The bootstrap `bin/pi` receives ordinary Pi argv with no extra
+to `0` to opt out, except in direct mode where bootstrap is required). The bootstrap `bin/pi` receives ordinary Pi argv with no extra
 transport separator, and reads the stock runtime from `PI_UPSTREAM_BIN` (an
 absolute stock executable set by the Homebrew wrapper); a sibling `pi-upstream`
 exposes the stock CLI directly. `--launcher-check`/`--launcher-refresh` are
@@ -323,7 +362,8 @@ bash -n install.sh
 
 The CLI suite isolates HOME and stubs all provisioning and model/service calls.
 For an explicit network-enabled integration smoke, run
-`tests/smoke_minimal.sh /absolute/path/to/trusted/pi-shared`. It installs the
+`tests/smoke_minimal.sh /absolute/path/to/trusted/pi-shared` (add `direct` to
+exercise the unreleased native-only mode). It installs the
 pinned Pi runtime and real shared extension dependencies in a disposable HOME,
 uses the local shared repository's committed HEAD, and checks real profile
 loading and status. It never selects services, browsers or models; temporary
