@@ -26,9 +26,8 @@ config's generation metadata is authoritative for model endpoint/output settings
 and direct-shortcut choices. Remembered custom paths must be absolute (a leading
 `~` is expanded during setup).
 
-Unreleased source `setup --mode direct` keeps schema 2 and records
-`PI_SHARED_DIRECT_ONLY=1` in settings. This mode is **not in installed Homebrew
-0.1.7** and requires matching shared-module source. Update/status reject receipts
+`setup --mode direct` (Homebrew **0.1.8+** with an updated shared module) keeps
+schema 2 and records `PI_SHARED_DIRECT_ONLY=1` in settings. Update/status reject receipts
 that mix this policy with gateway/oMLX selections, inconsistent paths or disabled
 CLI bootstrap. Updates preserve the policy and custom paths rather than adopting
 calling-shell overrides. Launcher generation metadata is checked offline before

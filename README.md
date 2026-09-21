@@ -108,17 +108,17 @@ Optional shared tools still need their own prerequisites.
 gateway process answers. Onboard a provider/model separately before expecting
 inference; see its README and `docs/provider-onboarding.md`.
 
-### Native providers without a gateway (unreleased source)
+### Native providers without a gateway
 
-**`setup --mode direct` is unreleased source functionality, not available in the
-installed Homebrew 0.1.7 package.** It requires matching shared-module source
-with direct-only support; an older shared installer fails closed rather than
-silently completing gateway-enabled setup. No release/version bump is included.
-Use isolated development checkouts/profiles, not production module directories.
+**`setup --mode direct` requires Homebrew package 0.1.8 or newer** and the updated
+shared module. Run `pi-shared update` on existing installations first. An older
+shared launcher is rejected before its installer runs, rather than silently
+completing gateway-enabled setup. Develop in isolated checkouts/profiles, not
+production module directories.
 
 ```bash
-./bin/pi-shared setup --mode direct --without-browser --plan
-# Review, then replace --plan with --yes in an isolated development environment.
+pi-shared setup --mode direct --without-browser --plan
+# Review, then run without --plan (or use --yes for explicit noninteractive approval).
 ```
 
 Direct mode selects shared resources plus browser-worker by default; use
