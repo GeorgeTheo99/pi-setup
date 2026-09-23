@@ -50,10 +50,13 @@ gateway/model catalog is configured; before that `pi` behaves as stock Pi.
 Existing direct-launcher choices and explicit opt-outs are preserved, and no
 generated shell functions are required or created.
 
-Routine maintenance is now `pi-shared update`: it remembers the selected setup,
+Routine maintenance is `pi-shared update` (also **bare `pi update`** with package
+0.1.11+): it remembers the selected setup,
 updates its owning package/source and selected modules, refreshes the launcher
 config (offline, via `pi --launcher-refresh`), and verifies the result.
-`pi-shared update --plan` is read-only. Updates never touch software, services,
+`pi-shared update --plan` is read-only. Explicit `pi update` arguments retain
+stock behavior; use `pi update --extensions` for Pi package updates only.
+Updates never touch software, services,
 or models beyond the recorded selection. See [update ownership and safety](docs/updates.md),
 including the one-time setup capture required for older receipts.
 

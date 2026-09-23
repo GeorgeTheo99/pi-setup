@@ -1,9 +1,9 @@
-"""Package bootstrap (bin/pi) contract: stock Pi before setup, trusted shared
-launcher afterwards. No provider calls, no shell startup, no network.
+"""Package bootstrap contract: managed bare updates, otherwise stock Pi before
+setup and trusted shared launcher afterwards. No provider calls or network.
 
 The bootstrap is exercised as a subprocess with an isolated HOME, a fake stock
-`PI_UPSTREAM_BIN`, and (optionally) a fake shared checkout providing
-`bin/pi-launch`. Both exec targets are stubs that print their argv/environment so
+`PI_UPSTREAM_BIN`, its own fake updater, and (optionally) a fake shared checkout
+providing `bin/pi-launch`. All exec targets print their argv/environment so
 the test can assert the routing decision and the environment the bootstrap
 hands to the delegate.
 """
@@ -36,14 +36,20 @@ def env(tmp_path):
     home.mkdir()
     upstream = tmp_path / "pkg" / "pi-upstream-stock"
     _exe(upstream, 'printf "UPSTREAM argv=[%s]\\n" "$*"')
+    bootstrap = tmp_path / "pkg" / "bin" / "pi"
+    bootstrap.parent.mkdir()
+    shutil.copy2(BOOTSTRAP, bootstrap)
+    updater = bootstrap.with_name("pi-shared")
+    _exe(updater, 'printf "MANAGED argv=[%s]\\n" "$*"')
     base = {"HOME": str(home), "PATH": "/usr/bin:/bin",
             "PI_UPSTREAM_BIN": str(upstream), "PYTHONDONTWRITEBYTECODE": "1"}
-    return {"home": home, "tmp": tmp_path, "upstream": upstream, "env": base}
+    return {"home": home, "tmp": tmp_path, "upstream": upstream,
+            "bootstrap": bootstrap, "updater": updater, "env": base}
 
 
 def run(env, *args, **overrides):
     merged = {**env["env"], **{k: str(v) for k, v in overrides.items()}}
-    return subprocess.run([sys.executable, str(BOOTSTRAP), *args],
+    return subprocess.run([sys.executable, str(env["bootstrap"]), *args],
                           env=merged, capture_output=True, text=True, timeout=15)
 
 
@@ -87,6 +93,88 @@ def test_launcher_flags_before_setup_are_a_clear_actionable_error(env, command):
     assert "UPSTREAM" not in r.stdout
 
 
+# --- Managed bare update; explicit stock options retain their meaning -------
+
+@pytest.mark.parametrize("receipt", ["absent", "configured", "incomplete", "malformed"])
+def test_bare_update_uses_own_updater_before_launcher_or_receipt_processing(env, receipt):
+    if receipt != "absent":
+        code_root = shared_checkout(env)
+        path = write_receipt(env, {"version": 2,
+            "status": "incomplete" if receipt == "incomplete" else "module-checks-passed",
+            "modules": ["pi-shared"], "code_root": str(code_root)})
+        if receipt == "malformed":
+            path.write_text("not json")  # The trusted updater owns receipt validation.
+    result = run(env, "update")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "MANAGED argv=[update]"
+    assert "Pi runtime and saved modules" in result.stderr
+
+
+@pytest.mark.parametrize("upstream", ["", "relative/missing", "/nonexistent/pi-upstream"])
+def test_bare_update_can_repair_unavailable_runtime(env, upstream):
+    result = run(env, "update", PI_UPSTREAM_BIN=upstream)
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "MANAGED argv=[update]"
+
+
+def test_bare_update_preserves_exit_code_and_environment_without_path_lookup(env):
+    _exe(env["updater"], 'printf "PROFILE=[%s] CONFIG=[%s]\\n" "$PI_CODING_AGENT_DIR" "$PI_LAUNCHER_CONFIG"; exit 23')
+    decoy = env["tmp"] / "decoy-bin"
+    _exe(decoy / "pi-shared", 'echo WRONG_UPDATER; exit 42')
+    result = run(env, "update", PATH=f"{decoy}:/usr/bin:/bin",
+                 PI_CODING_AGENT_DIR="/explicit/profile", PI_LAUNCHER_CONFIG="/explicit/config.json")
+    assert result.returncode == 23
+    assert result.stdout.strip() == "PROFILE=[/explicit/profile] CONFIG=[/explicit/config.json]"
+
+
+@pytest.mark.parametrize("mutation", ["missing", "not-executable", "directory", "self-link"])
+def test_bare_update_fails_closed_when_own_updater_is_unavailable(env, mutation):
+    updater = env["updater"]
+    if mutation == "not-executable":
+        updater.chmod(0o644)
+    else:
+        updater.unlink()
+        if mutation == "directory":
+            updater.mkdir()
+        elif mutation == "self-link":
+            updater.symlink_to(env["bootstrap"])
+    result = run(env, "update")
+    assert result.returncode == 1
+    assert "packaged pi-shared updater is unavailable" in result.stderr
+    assert not result.stdout
+
+
+def test_bare_update_resolves_bootstrap_symlink_to_its_own_updater(env):
+    alias = env["tmp"] / "linked-bin" / "pi"
+    alias.parent.mkdir()
+    alias.symlink_to(env["bootstrap"])
+    _exe(alias.with_name("pi-shared"), 'echo WRONG_UPDATER')
+    env["bootstrap"] = alias
+    result = run(env, "update")
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "MANAGED argv=[update]"
+
+
+@pytest.mark.parametrize("configured", [False, True])
+@pytest.mark.parametrize("args", [
+    ("update", "--extensions"), ("update", "--models"),
+    ("update", "--extension", "npm:example"), ("update", "npm:example"),
+    ("update", "--help"), ("update", "--self"), ("update", "--all"),
+    ("update", "self"), ("update", "pi"), ("update", "--force"),
+    ("update", "--plan"), ("--", "update"), ("--system-prompt", "update"),
+])
+def test_non_bare_update_argv_is_not_reinterpreted(env, args, configured):
+    if configured:
+        code_root = shared_checkout(env)
+        write_receipt(env, {"version": 2, "status": "module-checks-passed",
+            "modules": ["pi-shared"], "code_root": str(code_root)})
+    result = run(env, *args)
+    assert result.returncode == 0, result.stderr
+    expected = f"{'LAUNCH' if configured else 'UPSTREAM'} argv=[{' '.join(args)}]"
+    assert result.stdout.strip() == expected + (" config=[]" if configured else "")
+    assert not result.stderr
+
+
 # --- Environment / PI_UPSTREAM_BIN contract ---------------------------------
 
 def test_missing_upstream_env_fails_without_exec(env):
@@ -110,7 +198,7 @@ def test_non_executable_upstream_is_rejected(env):
 
 
 def test_upstream_pointing_at_bootstrap_itself_is_refused(env):
-    r = run(env, "--help", PI_UPSTREAM_BIN=BOOTSTRAP.resolve())
+    r = run(env, "--help", PI_UPSTREAM_BIN=env["bootstrap"].resolve())
     assert r.returncode == 1
     assert "stock Pi runtime" in r.stderr and "UPSTREAM" not in r.stdout
 

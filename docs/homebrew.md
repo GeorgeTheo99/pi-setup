@@ -326,7 +326,8 @@ the model test was skipped. Offline recovery is not ready until those checks pas
 
 ## Status, upgrades and uninstall
 
-Use **`pi-shared update`** for routine updates of the complete saved selection.
+Use **`pi-shared update`** (or **bare `pi update`** with package 0.1.11+) for
+routine updates of the complete saved selection.
 It wraps the owning Homebrew package upgrade, re-executes the new CLI, updates
 selected modules/dependencies, regenerates the unified-CLI launcher config
 offline and verifies the result. See [one-command updates](updates.md) for
@@ -344,7 +345,8 @@ not prove authentication, inference, browser execution, oMLX health or recovery
 readiness. Use the component-specific checks for those capabilities.
 
 - `brew upgrade pi-shared` updates the packaged orchestration/Pi runtime only.
-  Do not use `pi update` or global npm to mutate the Homebrew-managed runtime.
+  Bare `pi update` uses the managed updater in package 0.1.11+. Explicit stock
+  self-update options and global npm must not mutate the Homebrew-owned runtime.
 - `pi-shared setup --mode ... --update` explicitly fetches and reruns selected
   module installers. Include optional selections again. There is no unattended
   service restart on Homebrew upgrade; modules may restart during explicit setup.

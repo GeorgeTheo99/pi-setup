@@ -91,11 +91,12 @@ if os.environ["SETUP_MODE"] == "direct":
     assert not (home / ".pi/agent/models.json").exists(), "direct setup took ownership of native models"
     assert not (Path(receipt["code_root"]) / "model-gateway").exists(), "gateway installed in direct mode"
 PY
-    "$stage/setup/bin/pi-shared" update </dev/null
+    # Bare pi update must use the owning setup updater, not stock self-update.
+    "$stage/setup/bin/pi" update </dev/null
     "$stage/setup/bin/pi-shared" update --modules-only </dev/null
     "$stage/setup/bin/pi-shared" status
     # The offline management flags still work after the update-driven refresh.
     PI_LAUNCHER_CONFIG="$HOME/.pi/launcher.json" "$launch" --launcher-check
     "$stage/setup/bin/pi" models
-    echo "MINIMAL_SETUP_SMOKE_OK ($SETUP_MODE): setup, unified-CLI config, offline launcher management, source re-exec update, repeated module update and status passed; no service/model calls, no ~/.zshrc"
+    echo "MINIMAL_SETUP_SMOKE_OK ($SETUP_MODE): setup, unified-CLI config, offline launcher management, pi update alias with source re-exec, repeated module update and status passed; no service/model calls, no ~/.zshrc"
   ' smoke "$STAGE"

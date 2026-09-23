@@ -4,13 +4,27 @@ After setup with this version, routine maintenance is:
 
 ```sh
 pi-shared update
+# Package 0.1.11+ also accepts:
+pi update
 ```
 
 There is no repeated component questionnaire and no manual regeneration step.
-Homebrew installations must use this command, not stock `pi update` or global
-npm: the formula owns a pinned runtime. Updates install the latest published
-package, not necessarily the latest npm Pi version. Package 0.1.10 pins stock
-Pi 0.87.1. Restart running Pi sessions after a runtime upgrade; `/reload` only
+Starting with package 0.1.11, **bare `pi update`** forwards to the same owning
+`pi-shared update` command, updating the pinned runtime and saved modules. It
+prints that scope before delegation, preserves the updater's exit status, and
+never searches PATH for a different updater. The updater still validates the
+saved receipt; before setup it reports that setup is required.
+
+Only the exact bare command is redirected. Explicit arguments, including
+`pi update --extensions`, `--models`, `--extension <source>`, and `--help`, retain
+stock routing. Stock self-update forms (`--self`, `self`, `pi`, `--all`, `--force`)
+remain unsupported for the Homebrew-owned runtime; use the bare command instead.
+Use `pi-shared update --plan` or `--modules-only` for managed update options.
+`pi -- update` remains a literal prompt, not an update request.
+
+Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
+install the latest published package, not necessarily the latest npm Pi version.
+Packages 0.1.10 and 0.1.11 pin stock Pi 0.87.1. Restart running Pi sessions after a runtime upgrade; `/reload` only
 reloads extensions and does not replace the running runtime.
 `pi-shared update --plan` reads the saved plan without commands, downloads or
 writes. `--modules-only` is an advanced/testing option that skips updating the
