@@ -7,6 +7,11 @@ pi-shared update
 ```
 
 There is no repeated component questionnaire and no manual regeneration step.
+Homebrew installations must use this command, not stock `pi update` or global
+npm: the formula owns a pinned runtime. Updates install the latest published
+package, not necessarily the latest npm Pi version. Package 0.1.10 pins stock
+Pi 0.87.1. Restart running Pi sessions after a runtime upgrade; `/reload` only
+reloads extensions and does not replace the running runtime.
 `pi-shared update --plan` reads the saved plan without commands, downloads or
 writes. `--modules-only` is an advanced/testing option that skips updating the
 owning CLI/runtime. A resource-only source installation without that coordinator

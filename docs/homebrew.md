@@ -249,7 +249,8 @@ For backward compatibility the installer still *removes* any recognized legacy
 launcher block or source line it previously added to `~/.zshrc`, keeping a
 private backup; it never writes or sources a shell rc. `PI_SETUP_NO_SHELL_RC=1`
 skips that cleanup, and custom/opted-out shells are honored. `pi-shared update`
-updates the writable shared-resource checkout, not Homebrew's packaged Pi runtime.
+updates the owning Homebrew package and selected writable modules;
+`pi-shared update --modules-only` intentionally skips the packaged Pi runtime.
 
 ## oMLX: optional, never an implicit model download
 
