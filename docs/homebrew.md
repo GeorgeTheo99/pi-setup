@@ -40,6 +40,35 @@ The command can also run from a trusted source checkout without Homebrew:
 Source users must already have the prerequisites listed in the README. The
 Homebrew-owned Pi runtime is not installed by this source command.
 
+## Runtime promotion policy
+
+The public package ships **one exact Pi runtime**, currently **0.85.1**. The
+setup CLI can advance independently while that runtime stays pinned. There are
+no runtime channels, dynamic npm-version selection, or automatic fallbacks.
+
+Runtime releases follow availability through the maintainer's required approved
+npm registry, not upstream npm's publication schedule. Before changing the pin:
+
+1. Review the exact runtime and full dependency snapshot; update the manifest,
+   lockfile and `tests/test_runtime_pin.py` together, without floating ranges.
+2. Install that lockset through the required registry in a disposable directory
+   with a **fresh npm cache** and lifecycle scripts disabled. Record the registry,
+   timestamp, Node/npm/platform, lock digest and actual installed versions;
+   inspect optional-package omissions. Metadata, a dry run or a warm cache is
+   not sufficient evidence of installability.
+3. Run the setup tests and real shared-profile smoke against that runtime, plus
+   downstream extension compatibility checks where applicable.
+4. Publish only after review and approval, then pin the verified source archive
+   in the companion tap. Registry acceptance is time-specific, not a blanket
+   security approval or a guarantee that future downloads will succeed.
+
+Use the existing generic `HOMEBREW_NPM_REGISTRY` setting; organization-specific
+registry URLs and credentials stay outside the public package. Never bypass a
+registry denial or rewrite the lockfile during installation. If the required
+registry still blocks the proposed runtime or its dependencies, keep the current
+pin and defer that runtime release. Security revocations require reassessment,
+not an automatic downgrade to an arbitrary older version.
+
 ## Homebrew trust errors
 
 If installation refuses to load `georgetheo99/tap/pi-shared` from an untrusted

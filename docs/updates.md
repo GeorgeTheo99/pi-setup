@@ -24,8 +24,15 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Packages 0.1.10 and 0.1.11 pin stock Pi 0.87.1. Restart running Pi sessions after a runtime upgrade; `/reload` only
-reloads extensions and does not replace the running runtime.
+Package 0.1.12 pins stock Pi **0.85.1**, restoring the complete dependency
+snapshot from 0.1.9 after the newer runtime was blocked by a required registry.
+The setup CLI keeps the managed `pi update` behavior introduced in 0.1.11.
+There is one supported runtime, with no alternate channel or automatic fallback;
+future bumps follow the [registry-validated promotion policy](homebrew.md#runtime-promotion-policy).
+Upgrading from package 0.1.10 or 0.1.11 replaces Pi 0.87.1 with 0.85.1; review this
+intentional runtime downgrade before applying the package update. Restart running
+Pi sessions after any runtime change; `/reload` only reloads extensions and does
+not replace the running runtime.
 `pi-shared update --plan` reads the saved plan without commands, downloads or
 writes. `--modules-only` is an advanced/testing option that skips updating the
 owning CLI/runtime. A resource-only source installation without that coordinator

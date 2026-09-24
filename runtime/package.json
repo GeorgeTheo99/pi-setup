@@ -5,6 +5,6 @@
   "description": "Homebrew-owned Pi runtime; update with brew, not npm globally",
   "engines": { "node": ">=22.19.0" },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.87.1"
+    "@earendil-works/pi-coding-agent": "0.85.1"
   }
 }
