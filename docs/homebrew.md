@@ -379,10 +379,13 @@ readiness. Use the component-specific checks for those capabilities.
 - `pi-shared setup --mode ... --update` explicitly fetches and reruns selected
   module installers. Include optional selections again. There is no unattended
   service restart on Homebrew upgrade; modules may restart during explicit setup.
+- `pi-shared uninstall --plan` previews user-setup teardown; `uninstall --yes`
+  stops/unregisters owned selected services and detaches generated wiring with
+  private recovery backups. `--archive-config` also detaches gateway model entries.
+  See [uninstall and retained state](uninstall.md) before applying.
 - `brew uninstall pi-shared` removes the formula, not your modules, services,
-  credentials, profiles, sessions or models. Stop/manage these using their own
-  documented operators before uninstalling runtime prerequisites. No recursive
-  HOME cleanup or destructive uninstall is supplied.
+  credentials, profiles, sessions or models. Run explicit setup teardown first
+  when those services should stop. No recursive HOME cleanup is supplied.
 - Gateway/browser/search retain their own per-user service managers. There is
   no competing `brew services start pi-shared` service. Only opt-in oMLX uses
   its upstream Homebrew service in this flow.

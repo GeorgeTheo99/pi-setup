@@ -669,8 +669,12 @@ def update(args):
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.12")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.13")
     commands = parser.add_subparsers(dest="command", required=True)
+    p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
+    p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")
+    p.add_argument("--yes", action="store_true", help="Apply teardown, including stopping recorded shared services")
+    p.add_argument("--archive-config", action="store_true", help="Also detach gateway model entries/catalog links; preserve other providers and gateway source configuration")
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],
                    help="direct: native Pi providers, no gateway/oMLX; cloud/local/both: gateway-enabled setup")
@@ -695,6 +699,9 @@ def main():
     s.add_argument("--require-omnigent", action="store_true", help="Also check native-Pi prerequisites without changing the saved selection")
     args = parser.parse_args()
     try:
+        if args.command == "uninstall":
+            import teardown
+            return teardown.uninstall(args, read_state, state_path, update_lock)
         if args.command == "setup":
             return setup(args)
         return update(args) if args.command == "update" else status(args.require_omnigent)
