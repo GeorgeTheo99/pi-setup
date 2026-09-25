@@ -115,10 +115,10 @@ def test_plan_never_probes_even_missing_key_or_executables(gateway, monkeypatch)
 def test_default_wizard_offers_connection_and_cancel_is_safe(gateway, monkeypatch, capsys):
     _, calls, key = gateway
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    answers = iter(["existing-gateway", "https://gateway.example", str(key), "n"])
+    answers = iter(["https://gateway.example", str(key), "n"])
     monkeypatch.setattr("builtins.input", lambda _: next(answers))
-    assert cli.setup(options(mode=None, yes=False)) == 0
-    assert "Connect directly to an existing remote model-gateway" in capsys.readouterr().out
+    assert cli.setup(options(mode=None, access=["existing-gateway"], yes=False)) == 0
+    assert "Model access: direct, existing-gateway" in capsys.readouterr().out
     assert not calls and not cli.state_path().exists()
 
 

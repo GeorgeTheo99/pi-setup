@@ -128,7 +128,8 @@ preview (LibreOffice and Poppler), remain separately installed.
 
 Each interactive plan ends with approval. EOF, Ctrl-C, or declining approval
 stops setup; completed actions are never claimed to have been rolled back.
-Non-interactive use requires explicit `--mode` and `--yes`. A read-only `--plan`
+Non-interactive use requires `--yes`; omitted model choices reuse the receipt or
+default to direct on fresh installs. A read-only `--plan`
 performs no provisioning, executable probes, network calls, or state writes.
 
 ```bash
@@ -151,6 +152,16 @@ silently be dropped by selecting another mode.
 
 ### Direct native providers
 
+Starting with **0.1.14** and the matching shared module, model access is additive:
+`pi-shared setup --with model-gateway` adds a gateway to the default direct route;
+`--with direct` adds direct to a saved gateway setup. Repeat `--with` for explicit
+combinations. `--with existing-gateway` supports direct plus one remote gateway;
+`--with omlx` also selects the local gateway, with installation still requiring
+`--omlx install`. Local and remote gateways cannot coexist in one configuration.
+Plain setup reruns preserve saved modules and choices. Defaults/authentication are
+preserved; generated gateway models use their dedicated profile. Preview with
+`--plan`. See the [composition table](../README.md#composable-model-access-0114).
+
 `pi-shared setup --mode direct` requires **Homebrew 0.1.8 or newer** and matching
 shared-module direct-only support. Run `pi-shared update` first on existing
 installations. Test development changes with isolated paths/profiles; do not
@@ -171,17 +182,18 @@ stock Pi for other native providers. `PI_SHARED_DIRECT_LAUNCHERS=0` disables the
 shortcut without disabling native provider support.
 
 The receipt persists `PI_SHARED_DIRECT_ONLY=1`. Setup reruns retain omitted
-custom module/profile/CLI paths and direct-shortcut choices; optional module flags
-still follow normal setup selection. Update retains the saved policy regardless
+custom module/profile/CLI paths, direct-shortcut choices and optional modules.
+Update retains the saved policy regardless
 of calling-shell overrides, and status checks it offline. Generated metadata must
 contain only `--direct-only --shared-dir <path>` and one direct-shortcut flag:
 older shared versions cannot silently ignore the policy and report completion.
 Direct mode requires nonempty `PI_SHARED_CLI_OUT` and rejects
 `PI_SHARED_BOOTSTRAP_LAUNCHERS=0` before installation.
 
-A prior local/remote gateway or oMLX receipt, even incomplete, blocks direct
-setup before mutation. Switching a direct receipt to gateway-enabled setup also
-requires manual reconciliation. No services, credentials or existing gateway
+A prior local/remote gateway or oMLX receipt, even incomplete, blocks exclusive
+`--mode direct` setup before mutation. Use additive `--with direct` instead.
+Likewise, add a gateway with `--with model-gateway`, not an exclusive mode switch.
+No services, credentials or existing gateway
 configuration are removed; this is not a migration tool. Setup/status do not
 verify native provider authentication or inference.
 
@@ -198,7 +210,8 @@ pi-shared setup --mode existing-gateway \
 # Replace --plan with --yes after review.
 ```
 
-The wizard also offers this direct-connection choice. Supply a gateway base URL
+Select this connection explicitly with `--mode existing-gateway` (gateway only)
+or `--with existing-gateway` (additive). Supply a gateway base URL
 (optional trailing `/v1`) and an existing absolute key-file path: regular,
 non-symlink, owned by you, mode `0600`. Setup never accepts a literal credential
 argument, provisions a key, or puts its contents in the receipt. HTTPS is the

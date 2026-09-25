@@ -233,7 +233,14 @@ PY
       || die "Shared launcher lacks compatible direct-only setup or existing routing requires reconciliation"
   fi
   log "Installing $name..."
-  if [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" = pi-shared ] && [ -z "${PI_SHARED_CLI_OUT:-}" ]; then
+  if [ "$name" = pi-shared ] && [ "${PI_SHARED_ENABLE_GATEWAY:-0}" = 1 ]; then
+    # Explicit capability handshake: old installers must not silently retain
+    # direct-only launcher metadata and report a successful combined setup.
+    [ -x "$dest/bin/pi-shared-install" ] \
+      && "$dest/bin/pi-shared-install" --help | grep -q -- '--enable-gateway' \
+      || die "Shared installer lacks --enable-gateway; update pi-shared before composing model access"
+    (cd "$dest" && ./install.sh --enable-gateway) || die "$name installer failed"
+  elif [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" = pi-shared ] && [ -z "${PI_SHARED_CLI_OUT:-}" ]; then
     # Keep the current launcher metadata/profile selection for the final refresh.
     (cd "$dest" && ./install.sh --no-catalog) || die "$name installer failed"
   else

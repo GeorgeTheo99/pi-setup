@@ -25,7 +25,8 @@ versions without `brew trust`, omit that first command.
 ```bash
 brew trust --formula georgetheo99/tap/pi-shared
 brew install georgetheo99/tap/pi-shared
-pi-shared setup                         # interactive choices and final approval
+pi-shared setup                         # direct by default; saved selection on rerun
+pi-shared setup --with model-gateway --plan # direct + gateway; read-only preview
 pi-shared setup --mode cloud --plan     # read-only preview; no downloads or commands
 pi-shared setup --local                 # opt into oMLX options, now or later
 pi-shared status                        # selected module checks, not inference proof
@@ -111,6 +112,29 @@ Optional shared tools still need their own prerequisites.
 gateway process answers. Onboard a provider/model separately before expecting
 inference; see its README and `docs/provider-onboarding.md`.
 
+### Composable model access (0.1.14+)
+
+Direct native providers are the fresh setup default. With the matching shared
+module, repeat `--with` to add access without discarding saved selections:
+
+| Access | Setup command |
+|---|---|
+| Direct (default) | `pi-shared setup` |
+| Direct + local gateway | `pi-shared setup --with model-gateway` |
+| Direct + remote gateway | `pi-shared setup --with existing-gateway --gateway-url https://gateway.example --gateway-key-file /absolute/private.key` |
+| Direct + local gateway + oMLX | `pi-shared setup --with omlx --omlx install` |
+| Add direct to an existing gateway setup | `pi-shared setup --with direct` |
+
+Append `--plan` to preview. oMLX installation remains explicitly opt-in and
+hardware-guarded. Plain reruns preserve saved modules, connection settings and
+model access. Additive setup preserves native auth, model files and defaults;
+gateway aliases use their dedicated profile. Conflicting customized files are
+rejected before replacement. Local and remote gateways cannot currently coexist
+under the same provider identity. These flags never remove selected services.
+
+Legacy `--mode cloud|local|both|existing-gateway` remains available for explicit
+gateway-only fresh setups; `both` means cloud/local, not direct/gateway.
+
 ### Native providers without a gateway
 
 **`setup --mode direct` requires Homebrew package 0.1.8 or newer** and the updated
@@ -170,8 +194,8 @@ and `pi <alias>`; it neither provisions credentials nor changes remote services,
 uses federation, downloads weights, or tests inference. Failed discovery leaves
 setup incomplete. The receipt stores only the endpoint, key-file reference and
 HTTP opt-in. Rerunning `pi-shared setup --mode existing-gateway --yes` reuses the
-saved connection and explicitly refreshes discovery; repeat optional module
-selections as needed. Setup refuses to silently discard an external connection
+saved connection and explicitly refreshes discovery; omitted optional module
+selections are preserved. Setup refuses to silently discard an external connection
 or mix it with a previously selected local gateway/oMLX.
 
 `pi-shared update` preserves the connection and checks it **offline only**;

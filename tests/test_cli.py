@@ -57,9 +57,9 @@ def test_help_and_plan_are_side_effect_free_subprocess(tmp_path):
         assert list(home.iterdir()) == []
 
 
-def test_default_noninteractive_requires_mode(isolated):
-    with pytest.raises(RuntimeError, match="Specify --mode"):
-        cli.setup(options(mode=None))
+def test_default_noninteractive_plan_is_direct(isolated, capsys):
+    assert cli.setup(options(mode=None, plan=True)) == 0
+    assert "Model access: direct" in capsys.readouterr().out
     assert isolated[1] == []
     assert list(isolated[0].iterdir()) == []
 

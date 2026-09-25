@@ -29,6 +29,7 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(ROOT / "lib"))
 import update_support
 import existing_gateway
+import model_access
 import direct_setup
 
 FORMULA = "georgetheo99/tap/pi-shared"
@@ -177,6 +178,8 @@ def write_state(value):
 
 
 def guidance(args, code_root):
+    if "direct" in getattr(args, "model_access", ()) and args.mode != "direct":
+        print("Direct native providers remain available alongside the gateway; no default provider/model is changed.")
     if args.mode == "direct":
         print("Native providers: run pi, then /login (or configure a supported provider key) and /model.")
         print("Use pi --provider <provider> --model <model-id> for explicit selection; native Pi owns authentication and model settings.")
@@ -207,24 +210,23 @@ def setup(args):
     previous = read_state(allow_incomplete=True) if state_path().exists() else None
     saved_gateway = previous.get("external_gateway") if previous else None
     saved_direct = previous and previous.get("mode") == "direct"
+    additions = getattr(args, "access", []) or []
+    composing = bool(additions)
+    repair_selection = bool(previous and (args.mode is None and not args.local or composing))
+    if repair_selection:
+        args.with_omnigent = args.with_omnigent or previous.get("omnigent", False)
+        args.with_search = args.with_search or "local_web_search" in previous["modules"]
+        if "browser-worker" not in previous["modules"]:
+            args.without_browser = True
     if args.mode is None and not args.local:
-        if saved_gateway:
-            args.mode = "existing-gateway"
-        elif saved_direct:
-            args.mode = "direct"
+        args.mode = previous.get("mode", "direct") if previous else "direct"
     if args.local:
         if args.mode not in {None, "local"}:
             raise RuntimeError("--local cannot be combined with a different --mode.")
         args.mode = "local"
-    if args.mode is None:
-        if not interactive:
-            raise RuntimeError("Specify --mode direct|cloud|local|both|later|existing-gateway in non-interactive mode.")
-        args.mode = choose("How would you like to run models?", {
-            "direct": "Native Pi providers — no model-gateway or oMLX",
-            "cloud": "Gateway-enabled cloud providers — provider onboarding required",
-            "local": "Gateway-enabled local models with oMLX — Apple Silicon Mac required for installation",
-            "both": "Gateway-enabled cloud and local models", "later": "Configure models later",
-            "existing-gateway": "Connect directly to an existing remote model-gateway (no local gateway)"})
+    args.mode, args.model_access = model_access.resolve(args.mode, additions, previous)
+    if not additions and previous and "model_access" in previous and args.mode == previous.get("mode"):
+        args.model_access = previous["model_access"]
     remote = args.mode == "existing-gateway"
     direct = args.mode == "direct"
     if direct and previous and (previous.get("mode") in {"cloud", "local", "both", "existing-gateway"}
@@ -232,7 +234,7 @@ def setup(args):
             or previous.get("omlx") or previous.get("omlx_url") or previous.get("omlx_version")
             or any(name in previous.get("services", {}) for name in ("model-gateway", "omlx"))):
         raise RuntimeError("A gateway/oMLX was previously selected; refusing migration to direct mode. Reconcile the existing setup manually first; no services were removed.")
-    if saved_direct and not direct:
+    if saved_direct and not direct and not composing:
         raise RuntimeError("Direct-only setup is already selected; reconcile it manually before selecting gateway-enabled setup.")
     if saved_gateway and not remote:
         raise RuntimeError("An external gateway is already selected; refusing to discard it or mix it with local gateway setup. Reconcile the connection manually first.")
@@ -263,6 +265,16 @@ def setup(args):
                 "no": "Do not connect; use HTTPS", "yes": "Explicitly allow private HTTP"}) == "yes"
         gateway = existing_gateway.connection(url, key_file, allow_http)
     local = args.mode in {"local", "both"}
+    args.reuse_omlx = False
+    args.resume_omlx_package = False
+    if previous and local and args.omlx is None:
+        args.omlx = previous.get("omlx")
+        args.omlx_url = args.omlx_url or previous.get("omlx_url")
+    if previous and args.omlx == "install" and previous.get("omlx") == "install":
+        args.reuse_omlx = bool(previous.get("omlx_version") and "omlx" in previous.get("services", {}))
+        args.resume_omlx_package = bool(previous.get("omlx_version") and previous.get("omlx_phase") == "installed")
+    if composing and previous:
+        args.with_omnigent = args.with_omnigent or previous.get("omnigent", False)
     if not local and (args.omlx or args.omlx_url):
         raise RuntimeError("oMLX options require --mode local/both or --local.")
     if local and args.omlx is None:
@@ -282,13 +294,27 @@ def setup(args):
             "guide": "Show pi-fallback prototype preparation instructions"}) if interactive else "skip"
 
     env = dict(os.environ)
-    if saved_gateway or saved_direct:
+    if previous:
         # A rerun preserves selected paths and policy, not a reset to defaults.
-        for key, value in previous["settings"].items():
+        for key, value in previous.get("settings", {}).items():
             env.setdefault(key, value)
         env.setdefault("PI_SETUP_CODE_ROOT", previous["code_root"])
         env.setdefault("PI_SHARED_AGENT_DIR", previous["agent_dir"])
-        env.setdefault("PI_SHARED_CLI_OUT", previous["cli_file"])
+        env.setdefault("PI_SHARED_CLI_OUT", previous.get("cli_file", str(Path.home() / ".pi/launcher.json")))
+        # Preserve the recorded service's actual source paths, not installer
+        # defaults. This read verifies service ownership before any mutation.
+        service_state = previous
+        if previous.get("status") == "incomplete" or previous.get("version") == 1:
+            # A failed initial setup may own only some (or none) of its
+            # requested services. Validate every ownership entry we do have.
+            recorded = previous.get("services", {})
+            service_state = {**previous, "modules": [m for m in previous["modules"] if m in recorded],
+                             "omlx": previous.get("omlx") if "omlx" in recorded else None}
+        env.update(update_support.service_environment(service_state))
+    env["PI_SHARED_DIRECT_ENABLED"] = str(int("direct" in args.model_access))
+    env["PI_SHARED_ENABLE_GATEWAY"] = str(int("model-gateway" in args.model_access or remote))
+    if not direct and (composing or previous and previous.get("settings", {}).get("PI_SHARED_DIRECT_ONLY") == "1"):
+        env["PI_SHARED_DIRECT_ONLY"] = "0"
     if direct:
         env["PI_SHARED_DIRECT_ONLY"] = "1"
         env.setdefault("PI_SHARED_CLI_OUT", str(Path.home() / ".pi/launcher.json"))
@@ -308,6 +334,10 @@ def setup(args):
         modules.append("browser-worker")
     if args.with_search:
         modules.append("local_web_search")
+    if repair_selection:
+        # Adding model access must not silently drop services owned by the saved
+        # setup. Service removal belongs to explicit teardown, not composition.
+        modules = list(dict.fromkeys([*modules, *previous["modules"]]))
     flags += [f"--with-{m}" for m in modules[1:]]
     if args.update:
         flags.append("--update")
@@ -318,6 +348,7 @@ def setup(args):
         flags.append("--with-omnigent")
     print("Setup plan (Homebrew installation alone does not run this):")
     print(f"  Modules: {', '.join(modules)}\n  Writable module root: {code_root}")
+    print(f"  Model access: {', '.join(args.model_access) or 'configure later'}")
     print("  Install locked module dependencies, wire Pi profiles and CLI routing, start selected services, run doctor.")
     print("  Remove only recognized legacy shell wiring with a private backup; no new shell startup hooks.")
     print("  Existing selected services may restart. Unselected modules/services are not removed or stopped.")
@@ -346,11 +377,13 @@ def setup(args):
     for command in ("pi", "node", "npm", "git", "uv", "python3"):
         if not shutil.which(command):
             raise RuntimeError(f"Missing {command}; install the Homebrew pi-shared package or see README prerequisites.")
-    if args.omlx == "install":
+    if args.omlx == "install" and not args.reuse_omlx and not args.resume_omlx_package:
         if not shutil.which("brew"):
             raise RuntimeError("Homebrew is required to install oMLX.")
         hardware()
         guard_fresh_omlx()
+    if args.resume_omlx_package and update_support.omlx_version() != previous["omlx_version"]:
+        raise RuntimeError("Partially installed oMLX package changed; reconcile it before retrying setup")
     if not args.yes:
         if not interactive:
             raise RuntimeError("Setup needs a terminal or --yes. Use --plan to inspect without changes.")
@@ -363,6 +396,8 @@ def setup(args):
         current = read_state(allow_incomplete=True) if state_path().exists() else None
         if current != previous:
             raise RuntimeError("Setup receipt changed during approval; rerun to review the current selection.")
+        args.previous_services = previous.get("services", {}) if previous else {}
+        args.previous_omlx_version = previous.get("omlx_version") if previous else None
         return apply_setup(args, code_root, modules, flags, env, gateway)
 
 
@@ -371,6 +406,8 @@ def apply_setup(args, code_root, modules, flags, env, gateway=None):
     state = {"version": 2, "status": "incomplete", "code_root": str(code_root),
              "modules": modules, "agent_dir": agent_dir,
              "mode": args.mode, "omlx": args.omlx, "omlx_url": args.omlx_url,
+             "model_access": args.model_access,
+             "services": getattr(args, "previous_services", {}),
              "omnigent": args.with_omnigent}
     if gateway:
         state["external_gateway"] = gateway
@@ -393,24 +430,57 @@ def apply_setup(args, code_root, modules, flags, env, gateway=None):
     state["launchers_file"] = str(launchers.resolve())  # legacy migration input, never evaluated
     state["recovery"] = args.recovery
     state["operation"] = "setup"
+    if args.omlx == "install" and getattr(args, "previous_omlx_version", None):
+        state["omlx_version"] = args.previous_omlx_version
+        if args.resume_omlx_package:
+            state["omlx_phase"] = "installed"
+    before_services = update_support.service_snapshot(modules, state["settings"], args.omlx)
     write_state(state)
-    run([ROOT / "install.sh", *flags], env=env)
+    if gateway:
+        # Bootstrap against the remote connection's own future catalog, never
+        # an unrelated local gateway's aliases. connect writes this exact path.
+        cli_path = Path(state["cli_file"])
+        env["PI_SHARED_ALIASES"] = str(cli_path.with_name(cli_path.stem + ".gateway-aliases.json"))
+    try:
+        run([ROOT / "install.sh", *flags], env=env)
+    except (Exception, KeyboardInterrupt):
+        # Keep retryable ownership for services the trusted component installers
+        # actually created before failure. Never record successful completion.
+        after_services = update_support.service_snapshot(modules, state["settings"], args.omlx)
+        state["services"] = {name: entry for name, entry in after_services.items()
+                             if name in state["services"] or name not in before_services}
+        write_state(state)
+        raise
+    state["services"] = update_support.service_snapshot(modules, state["settings"], args.omlx)
+    write_state(state)  # later provider/doctor failures remain retryable too
     if args.mode == "direct":
         direct_setup.verify(state["cli_file"], code_root / "pi-shared")
     if gateway:
         run(existing_gateway.command(state, "connect"), env=env)
         print("External gateway catalog configured. Remote readiness and inference NOT verified. Use pi models to list aliases.")
     if args.omlx == "install":
-        run(["brew", "tap", "jundot/omlx", "https://github.com/jundot/omlx"])
-        run(["brew", "install", OMLX_FORMULA])
-        run(["brew", "services", "start", OMLX_FORMULA])
+        if not args.reuse_omlx:
+            if not args.resume_omlx_package:
+                run(["brew", "tap", "jundot/omlx", "https://github.com/jundot/omlx"])
+                run(["brew", "install", OMLX_FORMULA])
+                state["omlx_version"] = update_support.omlx_version()
+                state["omlx_phase"] = "installed"
+                write_state(state)
+            run(["brew", "services", "start", OMLX_FORMULA])
+            state["services"] = update_support.service_snapshot(modules, state["settings"], args.omlx)
+            state["omlx_phase"] = "started"
+            write_state(state)
         print("Waiting up to 60 seconds for oMLX model discovery (not inference)...", flush=True)
-        wait_omlx("http://127.0.0.1:8000/v1")
-        print("oMLX model listing responds; model readiness not tested. Manage models at http://127.0.0.1:8000/admin.")
+        if args.reuse_omlx:
+            wait_omlx(update_support.omlx_url(), allow_auth_required=True)
+        else:
+            wait_omlx(update_support.omlx_url())
+        print("oMLX endpoint responds; inference and model readiness not tested. Manage models using its configured /admin endpoint.")
     elif args.omlx == "existing":
         discover_models(args.omlx_url)
     if args.omlx == "install":
         state["omlx_version"] = update_support.omlx_version()
+        state["omlx_phase"] = "ready"
     state["launcher_refresh"] = state["bootstrap_launchers"] or Path(state["cli_file"]).is_file() or launchers.is_file()
     state["runtime_versions"] = update_support.runtime_versions()
     state["revisions"] = update_support.revisions(code_root, modules)
@@ -471,6 +541,7 @@ def read_state(allow_incomplete=False):
                        or len(v) != 40 or any(c not in "0123456789abcdef" for c in v)
                        for k, v in data.get("revisions", {}).items())):
             raise RuntimeError("Invalid update selection/revisions")
+    model_access.validate(data)
     if data.get("mode") == "direct":
         if (data["version"] != 2 or data.get("settings", {}).get("PI_SHARED_DIRECT_ONLY") != "1"
                 or data.get("bootstrap_launchers") is not True or not safe_path(data.get("cli_file"))
@@ -669,7 +740,7 @@ def update(args):
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.13")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.14")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
     p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")
@@ -677,7 +748,9 @@ def main():
     p.add_argument("--archive-config", action="store_true", help="Also detach gateway model entries/catalog links; preserve other providers and gateway source configuration")
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],
-                   help="direct: native Pi providers, no gateway/oMLX; cloud/local/both: gateway-enabled setup")
+                   help="Legacy topology shortcut; default: saved selection, or direct for a fresh install")
+    p.add_argument("--with", dest="access", action="append", choices=model_access.CHOICES, default=[],
+                   help="Add model access without discarding saved choices; repeat for combinations. omlx also selects model-gateway.")
     p.add_argument("--gateway-url", help="Existing remote gateway base URL (HTTPS preferred; optional /v1)")
     p.add_argument("--gateway-key-file", help="Absolute path to an existing owner-only 0600 key file; never a literal key")
     p.add_argument("--allow-private-http", action="store_true", default=None,

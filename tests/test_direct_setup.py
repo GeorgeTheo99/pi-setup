@@ -346,3 +346,48 @@ def test_real_shared_direct_setup_rerun_refresh_update_status(isolated, monkeypa
     settings = json.loads((agent / "settings.json").read_text())
     assert settings["defaultProvider"] == "test-provider" and settings["defaultModel"] == "keep-native"
     assert catalog.read_text() == "INVALID GATEWAY CATALOG MUST NOT BE READ"
+
+
+@pytest.mark.skipif(not os.environ.get("PI_SHARED_TEST_ROOT"), reason="set shared source for cross-repository integration")
+def test_real_shared_add_gateway_to_direct_preserves_native_state(isolated, monkeypatch):
+    home, calls = isolated
+    shared = Path(os.environ["PI_SHARED_TEST_ROOT"]).resolve()
+    for key in list(os.environ):
+        if key.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_", "PI_DATABRICKS_")):
+            monkeypatch.delenv(key)
+    modules = home / "modules";modules.mkdir()
+    (modules / "pi-shared").symlink_to(shared, target_is_directory=True)
+    monkeypatch.setenv("PI_SETUP_CODE_ROOT", str(modules))
+    monkeypatch.setattr(cli.update_support, "runtime_versions", lambda: {})
+    monkeypatch.setattr(cli.update_support, "revisions", lambda *a: {})
+    monkeypatch.setattr(cli.update_support, "service_environment", lambda _: {})
+    native = home / ".pi/agent";native.mkdir(parents=True)
+    (native / "models.json").write_text('{"providers":{"native":{"apiKey":"test-only","models":[]}}}')
+    (native / "auth.json").write_text('{"native":{"type":"api_key","key":"test-only"}}')
+    (native / "settings.json").write_text('{"defaultProvider":"native","defaultModel":"keep-me"}')
+    before = {n:(native/n).read_bytes() for n in ("models.json", "auth.json")}
+    aliases = home / ".pi/model-gateway/aliases.json";aliases.parent.mkdir(parents=True)
+    aliases.write_text('{}')
+    def run(command, *, env=None):
+        argv = list(map(str, command))
+        if argv[0] == str(ROOT / "install.sh"):
+            argv = [str(shared / "bin/pi-shared-install"), "--no-deps"]
+            if env.get("PI_SHARED_ENABLE_GATEWAY") == "1":argv.append("--enable-gateway")
+        elif argv[0] == str(ROOT / "bin/doctor"):
+            argv = [str(shared / "bin/pi-launch"), "--launcher-check"]
+        result = subprocess.run(argv, env=env, capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stdout + result.stderr
+    monkeypatch.setattr(cli, "run", run)
+    cli.setup(options(mode=None))
+    cli.setup(options(mode=None, access=["model-gateway"]))
+    receipt = cli.read_state()
+    config = Path(receipt["cli_file"])
+    rendered = config.read_bytes()
+    assert "--direct-only" not in json.loads(rendered)["generation"]["args"]
+    assert receipt["model_access"] == ["direct", "model-gateway"]
+    cli.setup(options(mode=None))
+    cli.status()
+    assert config.read_bytes() == rendered
+    assert all((native/n).read_bytes() == value for n,value in before.items())
+    settings = json.loads((native/"settings.json").read_text())
+    assert settings["defaultProvider"] == "native" and settings["defaultModel"] == "keep-me"
