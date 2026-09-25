@@ -740,7 +740,7 @@ def update(args):
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.14")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.15")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
     p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")

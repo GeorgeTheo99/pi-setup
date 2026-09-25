@@ -112,7 +112,7 @@ Optional shared tools still need their own prerequisites.
 gateway process answers. Onboard a provider/model separately before expecting
 inference; see its README and `docs/provider-onboarding.md`.
 
-### Composable model access (0.1.14+)
+### Composable model access (0.1.15+)
 
 Direct native providers are the fresh setup default. With the matching shared
 module, repeat `--with` to add access without discarding saved selections:

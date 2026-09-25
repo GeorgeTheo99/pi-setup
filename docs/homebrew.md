@@ -152,7 +152,7 @@ silently be dropped by selecting another mode.
 
 ### Direct native providers
 
-Starting with **0.1.14** and the matching shared module, model access is additive:
+Starting with **0.1.15** and the matching shared module, model access is additive:
 `pi-shared setup --with model-gateway` adds a gateway to the default direct route;
 `--with direct` adds direct to a saved gateway setup. Repeat `--with` for explicit
 combinations. `--with existing-gateway` supports direct plus one remote gateway;
@@ -160,7 +160,7 @@ combinations. `--with existing-gateway` supports direct plus one remote gateway;
 `--omlx install`. Local and remote gateways cannot coexist in one configuration.
 Plain setup reruns preserve saved modules and choices. Defaults/authentication are
 preserved; generated gateway models use their dedicated profile. Preview with
-`--plan`. See the [composition table](../README.md#composable-model-access-0114).
+`--plan`. See the [composition table](../README.md#composable-model-access-0115).
 
 `pi-shared setup --mode direct` requires **Homebrew 0.1.8 or newer** and matching
 shared-module direct-only support. Run `pi-shared update` first on existing
