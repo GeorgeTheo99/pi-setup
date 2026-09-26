@@ -227,6 +227,8 @@ def collect(args, previous, env, code_root, interactive, choose):
         if interactive and url_arg is None and not kept:
             prompt = f"MCP HTTP(S) endpoint URL [{url}] (Enter to keep, or cancel): " if url else "MCP HTTP(S) endpoint URL (or cancel): "
             url = _input(prompt) or url
+        if not url:
+            raise RuntimeError("--search existing requires --search-url (or a saved endpoint).")
         url = _url(url)
         print("Existing MCP must implement compatible web_search and web_fetch tools; a generic MCP server is not sufficient.")
         key_file = key_arg

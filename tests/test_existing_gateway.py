@@ -112,12 +112,11 @@ def test_plan_never_probes_even_missing_key_or_executables(gateway, monkeypatch)
     assert list(home.iterdir()) == []
 
 
-def test_default_wizard_offers_connection_and_cancel_is_safe(gateway, monkeypatch, capsys):
+def test_guided_connection_and_cancel_is_safe(gateway, monkeypatch, capsys):
+    from test_questionnaire import answers
     _, calls, key = gateway
-    monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
-    answers = iter(["https://gateway.example", str(key), "skip", "n"])
-    monkeypatch.setattr("builtins.input", lambda _: next(answers))
-    assert cli.setup(options(mode=None, access=["existing-gateway"], yes=False)) == 0
+    answers(monkeypatch, ["https://gateway.example", str(key), "skip", "no"])
+    assert cli.setup(options(mode=None, access=["existing-gateway"], yes=False, guided=True)) == 0
     assert "Model access: direct, existing-gateway" in capsys.readouterr().out
     assert not calls and not cli.state_path().exists()
 
@@ -131,8 +130,9 @@ def test_connection_prompt_cancellation(gateway, monkeypatch, answer):
             raise EOFError
         return answer
     monkeypatch.setattr("builtins.input", respond)
+    monkeypatch.setattr(cli.setup_menu, "require_terminal", lambda: None)
     with pytest.raises((KeyboardInterrupt, EOFError)):
-        cli.setup(options(mode="existing-gateway", yes=False))
+        cli.setup(options(mode="existing-gateway", yes=False, guided=True))
     assert not calls and not cli.state_path().exists()
 
 

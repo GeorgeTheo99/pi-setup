@@ -100,12 +100,15 @@ than trusting the whole tap.
 
 ## Setup choices
 
-**Questionnaire (0.1.16+):** interactive setup asks
-for each unspecified component choice before the plan: model access, browser,
-Omnigent checks, recovery guidance, and search. Explicit flags skip those
-questions. Reruns offer saved model access plus additive choices and preserve
-owned services; they are not an uninstall workflow. Noninteractive defaults
-remain unchanged. Browser rows below describe defaults, not mandatory installs.
+**CLI-first (0.1.17+):** normal setup resolves flags and saved/default
+settings, prints the plan, and asks only for final approval. Missing required
+inputs fail with actionable flag guidance. `--guided` explicitly opts into
+arrow-key menus for unspecified model access, browser, Omnigent, recovery, and
+search choices. Space toggles model-access additions in one checklist; Enter
+advances, Escape cancels. Explicit flags skip their questions. Reruns preserve
+owned services; they are not an uninstall workflow. Defaults remain unchanged.
+Browser rows below describe defaults, not mandatory installs. Package 0.1.16
+used the typed questionnaire; update to 0.1.17 or newer for this flow.
 
 | Choice | What setup selects | What still requires user configuration |
 |---|---|---|
@@ -133,11 +136,15 @@ not install the separate private `app_*` browser binaries: those are an optional
 Pi browser-capture prerequisite. Other optional features, such as PowerPoint
 preview (LibreOffice and Poppler), remain separately installed.
 
-Each interactive plan ends with approval. EOF, Ctrl-C, or declining approval
-stops setup; completed actions are never claimed to have been rolled back.
+Normal terminal setup ends with one `y/N` confirmation. Guided approval is a
+keyboard menu defaulting to Cancel. EOF, Ctrl-C, or declining approval stops
+setup; completed actions are never claimed to have been rolled back.
 Non-interactive use requires `--yes`; omitted model choices reuse the receipt or
-default to direct on fresh installs. A read-only `--plan`
-performs no provisioning, executable probes, network calls, or state writes.
+default to direct on fresh installs. `--guided --yes` is rejected. A read-only
+`--plan` bypasses even `--guided` and performs no provisioning, executable
+probes, credential reads, network calls, or state writes. Guided menus require
+interactive stdin/stdout, `TERM`, Python curses, and enough screen space; use
+flags instead on unsupported terminals.
 
 ```bash
 pi-shared setup --mode cloud --plan
@@ -350,8 +357,8 @@ model-gateway, not directly to oMLX.
 
 ## Search and recovery
 
-Search is opt-in. The wizard in package 0.1.16+ offers local Brave search, an existing
-compatible MCP endpoint, or skipping provisioning. It explains key acquisition
+Search is opt-in. The optional `--guided` flow offers local Brave search, an
+existing compatible MCP endpoint, or skipping provisioning. It explains key acquisition
 and accepts hidden input or an existing private key file. No secrets are written
 until the final plan is approved; receipts/config contain only paths, not keys.
 Fresh local data lives outside the module checkout, so no pre-clone is needed.
@@ -443,6 +450,11 @@ pinned Pi runtime and real shared extension dependencies in a disposable HOME,
 uses the local shared repository's committed HEAD, and checks real profile
 loading and status. It never selects services, browsers or models; temporary
 files are removed on exit. npm registry downloads may occur.
+`tests/test_setup_menu.py` also runs real pseudo-terminal menu navigation,
+Escape/Ctrl-C/EOF cancellation, terminal restoration, and CLI-only confirmation,
+with isolated HOME and an apply guard. The tap's installed CLI smoke also checks
+CLI-first confirmation, read-only guided plans, keyboard navigation, and Escape
+cancellation in a disposable HOME without applying setup.
 The tap's tests cover packaging and release pinning separately. Before public
 promotion: review changes, publish approved source/tap refs, pin a verified
 source archive, run Homebrew installation/tests in a disposable Mac environment,

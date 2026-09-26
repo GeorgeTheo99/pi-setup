@@ -8,7 +8,7 @@ from test_cli import cli, isolated, options
 
 
 def wizard_options(**overrides):
-    return options(**(dict(mode=None, yes=False, without_browser=None, with_omnigent=None,
+    return options(**(dict(mode=None, yes=False, guided=True, without_browser=None, with_omnigent=None,
                           recovery=None, search=None, search_url=None, search_key_file=None,
                           brave_key_file=None, search_port=None, access=[]) | overrides))
 
@@ -21,11 +21,27 @@ def answers(monkeypatch, values):
         prompts.append(prompt)
         return next(iterator)
     monkeypatch.setattr("builtins.input", answer)
+    monkeypatch.setattr(cli.setup_menu, "require_terminal", lambda: None)
+    def select(question, choices):
+        print(question)
+        value = answer(question)
+        if value == "cancel":
+            raise KeyboardInterrupt
+        assert value in choices
+        return value
+    def select_many(question, choices, **kwargs):
+        value = answer(question)
+        assert isinstance(value, list) and set(value) <= choices.keys()
+        return value
+    monkeypatch.setattr(cli.setup_menu, "choose", select)
+    monkeypatch.setattr(cli.setup_menu, "confirm", lambda plan: select(
+        "Apply this plan?", {"no": "Cancel without changes", "yes": "Apply this plan"}) == "yes")
+    monkeypatch.setattr(cli.setup_menu, "choose_many", select_many)
     return prompts
 
 
 def test_fresh_wizard_covers_components_before_approval(isolated, monkeypatch, capsys):
-    answers(monkeypatch, ["later", "skip", "skip", "skip", "skip", "n"])
+    answers(monkeypatch, ["later", "skip", "skip", "skip", "skip", "no"])
     assert cli.setup(wizard_options()) == 0
     output = capsys.readouterr().out
     for label in ("Model connection", "Public browser", "Omnigent", "recovery", "Search", "Setup plan"):
@@ -62,7 +78,7 @@ def test_saved_components_preserved_without_reinstall_question(isolated, monkeyp
     cli.setup(options(without_browser=False, with_omnigent=True))
     previous = cli.read_state()
     args = wizard_options()
-    answers(monkeypatch, ["keep"])
+    answers(monkeypatch, [[]])
     cli.collect_components(args, previous, True)
     assert args.without_browser is False
     assert args.with_omnigent is True
@@ -82,7 +98,7 @@ def test_gateway_can_include_direct_providers(isolated, monkeypatch):
 def test_saved_model_access_addition_is_composable(isolated, monkeypatch):
     args = wizard_options()
     previous = {"mode": "direct", "modules": ["pi-shared"], "recovery": "skip"}
-    answers(monkeypatch, ["model-gateway", "keep", "skip", "skip"])
+    answers(monkeypatch, [["model-gateway"], "skip", "skip"])
     cli.collect_components(args, previous, True)
     mode, access = cli.model_access.resolve("direct", args.access, previous)
     assert mode == "cloud"

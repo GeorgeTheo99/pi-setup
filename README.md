@@ -25,10 +25,11 @@ versions without `brew trust`, omit that first command.
 ```bash
 brew trust --formula georgetheo99/tap/pi-shared
 brew install georgetheo99/tap/pi-shared
-pi-shared setup                         # interactive choices; preserve saved selections
+pi-shared setup                         # resolve saved/default choices, show plan, confirm
+pi-shared setup --guided                # optional arrow-key menus (0.1.17+)
 pi-shared setup --with model-gateway --plan # direct + gateway; read-only preview
 pi-shared setup --mode cloud --plan     # read-only preview; no downloads or commands
-pi-shared setup --local                 # opt into oMLX options, now or later
+pi-shared setup --local                 # local topology; oMLX guidance unless explicitly selected
 pi-shared status                        # selected module checks, not inference proof
 pi                                     # authenticate with /login and select /model
 pi models                             # configured model aliases, once a catalog exists
@@ -68,14 +69,39 @@ module installers used below. The new CLI defaults writable module checkouts to
 `~/.local/share/pi-shared/modules`; `PI_SETUP_CODE_ROOT` overrides this. The legacy
 `./install.sh` keeps its existing `~/local_code` default.
 
-## Interactive questionnaire (0.1.16+)
+## CLI-first setup (0.1.17+)
 
-In a terminal, `pi-shared setup` asks for unspecified model access, browser
-installation, optional Omnigent checks, recovery guidance, and search. It then
-shows the complete plan for approval. Explicit flags skip their corresponding
-questions. Saved selections can be retained; model access can be added without
-removing existing services. Declining the plan, EOF, or cancellation before
-approval writes no keys or configuration and starts no services.
+Setup resolves explicit flags, then saved selections, then defaults
+identically in terminals and scripts. `pi-shared setup` prints the plan and asks
+only `Apply this plan? [y/N]`; it never launches a component questionnaire.
+Missing required URLs or key-file inputs fail with the flag needed to fix them.
+Fresh defaults remain direct providers, browser enabled, search skipped, and no
+Omnigent/recovery checks. Use `--without-browser` to omit Chromium.
+
+```bash
+pi-shared setup --mode direct --without-browser --plan  # read-only preview
+pi-shared setup --mode direct --without-browser --yes   # explicitly apply
+pi-shared setup --guided                               # optional keyboard UI
+```
+
+`--guided` offers arrow-key selection, Space to toggle checklist additions, and
+Enter to advance. Saved model access uses one additions checklist, not a repeated
+"add another" prompt; Enter alone keeps the saved selection. Incompatible local
+and remote gateway additions are mutually exclusive. Explicit flags skip their
+questions. Actual URLs and file paths still use text fields; hidden credential
+input remains available. Escape cancels a menu; Ctrl-C/EOF cancels input. The
+final approval defaults to Cancel and keeps the full plan available with
+PgUp/PgDn and Home/End scrolling, including endpoints, key-file references and
+transport/override warnings. The menu uses JSON escapes for non-ASCII/control
+characters and literal backslashes so paths cannot overwrite adjacent rows.
+An interactive input/output terminal with
+`TERM` and Python curses is required; small/unsupported terminals get a CLI
+alternative, not a typed-options fallback. No new Python dependency is installed.
+
+Saved selections are preserved without removing existing services. Declining
+approval or cancelling before it writes no keys or configuration and starts no
+services. Package **0.1.16** used the previous typed questionnaire; update to
+**0.1.17 or newer** for CLI-first setup and `--guided`.
 
 Search choices are **local Brave broker**, **existing compatible MCP endpoint**,
 or **skip provisioning**. Local setup explains how to obtain a Brave API key and
@@ -83,11 +109,11 @@ accepts hidden input or a private key file; no pre-cloning is needed. Existing
 search collects a URL and optional bearer authentication. Keys are never printed
 in the plan, put in command arguments, or stored in the setup receipt.
 
-`--plan` remains noninteractive, read-only, and makes no credential reads or
-network requests. `--yes` uses explicit/saved settings without prompting; fresh
-noninteractive defaults remain direct providers, browser enabled, search skipped.
-Native provider login and gateway provider onboarding remain separate steps,
-not credential or inference checks claimed by this questionnaire.
+`--plan` remains noninteractive and read-only even with `--guided`, and makes no
+credential reads or network requests. `--yes` applies resolved settings without
+prompting and cannot be combined with `--guided`. Without a terminal, applying
+requires `--yes`. Native provider login and gateway provider onboarding remain
+separate steps, not credential or inference checks claimed by setup.
 
 ## Modules
 
@@ -170,8 +196,8 @@ pi-shared setup --mode direct --without-browser --plan
 # Review, then run without --plan (or use --yes for explicit noninteractive approval).
 ```
 
-Direct mode selects shared resources; terminal setup asks about browser-worker.
-Noninteractive setup includes browser-worker by default; use `--without-browser`
+Direct mode selects shared resources and includes browser-worker by default;
+`--guided` offers a browser choice. Use `--without-browser`
 to omit browsing. It does not install model-gateway/oMLX,
 read a gateway catalog, or generate a gateway profile/model file. Native Pi
 retains authentication and model settings: use `/login`, `/model`, or
@@ -245,11 +271,12 @@ for the supported scope, limitations, and evidence required before publication.
 
 ### Add search
 
-The questionnaire in package 0.1.16+ collects local credentials
-before approval and provisions them privately before the search installer starts:
+The optional `--guided` flow collects local credentials before approval and
+provisions them privately before the search installer starts. CLI-first setup
+uses private key-file flags or existing credentials:
 
 ```bash
-pi-shared setup                         # choose local / existing / skip
+pi-shared setup --guided                # choose local / existing / skip
 pi-shared setup --search local --brave-key-file /absolute/private/brave.key --plan
 pi-shared setup --search existing --search-url https://search.example/mcp \
   --search-key-file /absolute/private/broker.key --plan
@@ -265,7 +292,7 @@ tools or uninstall a previously selected service.
 Existing MCP servers must implement `web_search(query, num_results)` and
 `web_fetch(url, max_chars)`. Setup saves routing in `~/.pi/research/config.json`,
 preserving browser/unrelated fields; token values stay in private `0600` files.
-Bearer authentication requires HTTPS or loopback HTTP. Interactive reruns can
+Bearer authentication requires HTTPS or loopback HTTP. Guided reruns can
 change the endpoint, replace the key reference, or remove authentication. A new
 hidden token uses a fresh private file when needed; old credentials are retained,
 not overwritten. Setup does not contact external search servers or issue billable provider queries; configuration is not
