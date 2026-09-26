@@ -25,6 +25,8 @@ versions without `brew trust`, omit that first command.
 ```bash
 brew trust --formula georgetheo99/tap/pi-shared
 brew install georgetheo99/tap/pi-shared
+pi-shared -h                            # setup paths and lifecycle commands
+pi-shared setup -h                      # every setup option and preview-first recipes
 pi-shared setup                         # resolve saved/default choices, show plan, confirm
 pi-shared setup --guided                # optional arrow-key menus (0.1.17+)
 pi-shared setup --with model-gateway --plan # direct + gateway; read-only preview
@@ -68,6 +70,28 @@ weights during package installation. `setup` explicitly delegates to the same
 module installers used below. The new CLI defaults writable module checkouts to
 `~/.local/share/pi-shared/modules`; `PI_SETUP_CODE_ROOT` overrides this. The legacy
 `./install.sh` keeps its existing `~/local_code` default.
+
+## Setup from help
+
+`pi-shared -h` is the capability overview: native providers, remote gateways
+(including Tailscale), a local gateway/oMLX, browser automation, search, and
+optional Omnigent checks/recovery guidance. `pi-shared setup -h` groups every
+setup flag by task and includes copyable `--plan` recipes, prerequisites and
+safety notes. Use `pi-shared <command> -h` for update, status or uninstall details.
+Both `-h` and `--help` are read-only: they do not launch a wizard or provision
+anything, and work before setup in an empty home directory.
+
+Choose a recipe, substitute your endpoints and private credential-file paths,
+and run its preview. Then remove `--plan` for terminal approval or replace it
+with `--yes` to apply explicitly. Use `--guided` for menus instead. Recipes are
+separate starting points, not a script to run in order; `--with` preserves saved
+access, and local/remote gateway selections cannot coexist. The examples are
+tested as read-only plans in fresh home directories.
+
+Help covers installer capabilities, not external onboarding: obtain credentials,
+join the relevant network, authenticate native providers, and obtain/configure
+models separately. Setup does not test inference or download LLM weights;
+Omnigent/recovery flags are checks/guidance, not installers.
 
 ## CLI-first setup (0.1.17+)
 

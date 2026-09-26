@@ -840,47 +840,153 @@ def update(args):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
+    parser = argparse.ArgumentParser(
+        description="pi-shared — install and configure a Pi environment via pi-setup.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""Setup paths (combine compatible options; details: pi-shared setup -h):
+  Native providers       setup --with direct
+  Remote gateway         setup --with existing-gateway
+                         Prompts for endpoint, key-file path and approval.
+  Local gateway          setup --with model-gateway
+  Local models (oMLX)     setup --with omlx --omlx install
+  Browser automation     setup --with-browser / --without-browser
+  Web search             setup --search local / existing / skip
+  Omnigent checks        setup --with-omnigent (checks only, not installation)
+  Recovery guidance      setup --recovery guide (no installation)
+  Guided choices         setup --guided
+
+Start here:
+  pi-shared setup --plan                 Preview choices; no changes
+  pi-shared setup --guided               Choose interactively, then approve
+  pi-shared setup -h                     All setup flags and examples
+
+Maintain your installation:
+  pi-shared status                       Check selected modules; not inference
+  pi-shared update --plan                Preview saved installation updates
+  pi-shared uninstall --plan             Preview teardown; preserve user data
+  pi-shared <command> -h                 Detailed help for any command above
+
+Fresh defaults: direct providers + browser; no search or optional checks.
+Help never runs setup. --plan is read-only; --yes explicitly applies choices.
+Provider login, gateway onboarding and model downloads are separate steps.
+After setup: pi (use /login and /model); pi models lists configured routes.
+Docs: https://github.com/GeorgeTheo99/pi-setup#readme
+""")
     parser.add_argument("--version", action="version", version="pi-shared setup 0.1.18")
-    commands = parser.add_subparsers(dest="command", required=True)
-    p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
-    p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")
-    p.add_argument("--yes", action="store_true", help="Apply teardown, including stopping recorded shared services")
-    p.add_argument("--archive-config", action="store_true", help="Also detach gateway model entries/catalog links; preserve other providers and gateway source configuration")
-    p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
-    p.add_argument("--guided", action="store_true", help="Opt into arrow-key menus; remote gateway setup skips unrelated questions; --plan never prompts")
-    p.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],
-                   help="Topology shortcut; defaults to saved selection or direct; existing-gateway prompts for missing connection inputs on a TTY")
-    p.add_argument("--with", dest="access", action="append", choices=model_access.CHOICES, default=[],
+    commands = parser.add_subparsers(dest="command", required=True, title="Commands")
+    p = commands.add_parser(
+        "setup", help="Explicitly install/configure modules and start their services",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="""Configure shared Pi resources and optional services.
+Resolve explicit flags, then saved settings, then fresh defaults:
+direct providers + browser; search skipped; no Omnigent/recovery checks.
+Use --plan first. Terminal setup asks for approval; scripts need --yes.
+--guided opens menus; remote selection asks only for missing connection inputs.""",
+        epilog="""Examples (run separately; substitute your endpoints and private file paths):
+  Minimal native-provider setup (no browser/Chromium):
+    pi-shared setup --with direct --without-browser --plan
+  Add a local gateway for cloud providers (provider onboarding is separate):
+    pi-shared setup --with model-gateway --plan
+  Connect a remote gateway (no local gateway/oMLX installation):
+    pi-shared setup --gateway-url https://gateway.example/model-gateway \\
+      --gateway-key-file "$HOME/.config/model-gateway/client.key" --plan
+  Trusted private/Tailscale numeric-IP HTTP endpoint (key sent without TLS):
+    pi-shared setup --gateway-url http://100.64.0.1/model-gateway \\
+      --gateway-key-file "$HOME/.config/model-gateway/client.key" \\
+      --allow-private-http --plan
+  Install fresh oMLX + local gateway (Apple Silicon/macOS 15+ only):
+    pi-shared setup --with omlx --omlx install --plan
+  Use existing oMLX (numeric loopback URL; does not manage its service):
+    pi-shared setup --with omlx --omlx existing \\
+      --omlx-url http://127.0.0.1:8000/v1 --plan
+  Show oMLX guidance without installing it:
+    pi-shared setup --with omlx --omlx guide --plan
+  Add public browser automation (downloads Chromium when applied):
+    pi-shared setup --with-browser --plan
+  Add local Brave search (requires your Brave Search API key file):
+    pi-shared setup --search local \\
+      --brave-key-file "$HOME/.config/pi-shared/brave.key" --plan
+  Use an existing search MCP server (must expose web_search and web_fetch):
+    pi-shared setup --search existing --search-url https://search.example/mcp \\
+      --search-key-file "$HOME/.config/pi-shared/search.key" --plan
+    Omit --search-key-file for a server that needs no bearer authentication.
+  Check Omnigent native-Pi prerequisites (does not install or launch Omnigent):
+    pi-shared setup --with-omnigent --plan
+  Request independent pi-fallback recovery guidance (does not install it):
+    pi-shared setup --recovery guide --plan
+
+Apply and verify:
+  Replace --plan with --yes after review, or omit --plan for terminal approval.
+  pi-shared setup --guided               Optional menus, then plan approval
+  pi-shared setup --with existing-gateway
+                                        Prompts for connection and approval
+  pi-shared status                       Selected module checks, not inference
+  pi models                             List configured routes after setup
+  Start pi; use /login to authenticate and /model to select a native model.
+
+Safety and prerequisites:
+  Homebrew supplies CLI/runtime dependencies; source installs need them first.
+  --plan never reads keys, contacts services or writes files.
+  This also holds with --guided. Remote --plan/--yes/non-TTY setup needs
+  endpoint/key-file flags or saved values.
+  Key flags take existing private 0600 files, never literal secrets. Obtain them
+  separately. Gateway keys need an absolute path without symlinks and a regular
+  file owned by you with only one hard link.
+  Remote gateway: prefer HTTPS. HTTP needs a trusted numeric private/Tailscale
+  IP and explicit consent; hostnames require HTTPS. Reverse-proxy prefixes work.
+  Search: bearer authentication requires HTTPS or loopback HTTP. Without bearer
+  authentication, HTTP(S) hostnames are allowed; prefer HTTPS for remote search.
+  --with adds access and preserves saved choices. Local and remote gateways
+  cannot coexist; --mode is not a migration or removal command.
+  --search skip does not stop existing search services.
+  Setup never downloads LLM weights or tests inference.
+  Configure providers, models and local gateway routes separately.
+  Omnigent/recovery options are not installers.
+  Full prerequisites/onboarding: https://github.com/GeorgeTheo99/pi-setup#readme
+""")
+    execution = p.add_argument_group("Preview and approval")
+    execution.add_argument("--guided", action="store_true", help="Opt into arrow-key menus; remote gateway setup skips unrelated questions; --plan never prompts")
+    execution.add_argument("--plan", action="store_true", help="Show plan without commands, downloads, network or file changes")
+    execution.add_argument("--yes", action="store_true", help="Apply explicit choices without prompting; incompatible with --guided; never download LLM weights")
+    execution.add_argument("--update", action="store_true", help="Explicitly fetch/update selected writable module checkouts")
+    access = p.add_argument_group("Model access")
+    access.add_argument("--with", dest="access", action="append", choices=model_access.CHOICES, default=[],
                    help="Add model access without discarding saved choices; repeat for combinations. omlx also selects model-gateway.")
-    p.add_argument("--gateway-url", help="Add an existing gateway (preserves direct providers); HTTPS base URL with optional safe path prefix and /v1; conflicts with other explicit modes/local access")
-    p.add_argument("--gateway-key-file", help="Absolute path to an existing owner-only 0600 key file; never a literal key")
-    p.add_argument("--allow-private-http", action="store_true", default=None,
+    access.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],
+                   help="Topology shortcut: direct=native, cloud/local/both=gateway-enabled, later=defer, existing-gateway=remote; both means cloud+local, not direct+gateway; defaults to saved selection or direct")
+    access.add_argument("--local", action="store_true", help="Shortcut for --mode local; oMLX remains opt-in")
+    remote = p.add_argument_group("Remote gateway")
+    remote.add_argument("--gateway-url", help="Add an existing gateway (preserves direct providers); HTTPS base URL with optional safe path prefix and /v1; conflicts with other explicit modes/local access")
+    remote.add_argument("--gateway-key-file", help="Absolute path to an existing owner-only 0600 key file; never a literal key")
+    remote.add_argument("--allow-private-http", action="store_true", default=None,
                    help="Explicitly trust private/Tailscale HTTP for existing-gateway; the key is sent without TLS")
-    p.add_argument("--local", action="store_true", help="Shortcut for --mode local; oMLX remains opt-in")
-    p.add_argument("--omlx", choices=["existing", "install", "guide"], help="Default: saved selection or guide; --guided offers keyboard choices")
-    p.add_argument("--omlx-url", type=loopback_url, help="Explicit numeric loopback OpenAI URL for existing oMLX")
-    p.add_argument("--recovery", choices=["skip", "guide"], help="Independent pi-fallback prototype; no automatic installation")
-    browser = p.add_mutually_exclusive_group()
+    local = p.add_argument_group("Local models (oMLX)")
+    local.add_argument("--omlx", choices=["existing", "install", "guide"], help="Default: saved selection or guide; --guided offers keyboard choices")
+    local.add_argument("--omlx-url", type=loopback_url, help="Explicit numeric loopback OpenAI URL for existing oMLX")
+    browser = p.add_argument_group("Browser automation").add_mutually_exclusive_group()
     browser.add_argument("--without-browser", action="store_true", default=None, help="Do not select browser-worker/Chromium")
     browser.add_argument("--with-browser", dest="without_browser", action="store_false", help="Select browser-worker and Chromium")
-    p.add_argument("--search", choices=["local", "existing", "skip"], help="Install local Brave search, connect to a compatible MCP server, or leave search unchanged")
-    p.add_argument("--with-search", action="store_true", help="Compatibility alias for local search")
-    p.add_argument("--search-url", help="Existing search MCP HTTP(S) endpoint; must expose web_search and web_fetch")
-    p.add_argument("--search-key-file", help="Private 0600 broker bearer-token file (not a Brave key)")
-    p.add_argument("--brave-key-file", help="Private 0600 Brave API key file to provision local search")
-    p.add_argument("--search-port", type=int, help="Local search loopback port (default 8889 or saved port)")
-    omnigent = p.add_mutually_exclusive_group()
+    search = p.add_argument_group("Web search")
+    search.add_argument("--search", choices=["local", "existing", "skip"], help="Install local Brave search, connect to a compatible MCP server, or leave search unchanged")
+    search.add_argument("--with-search", action="store_true", help="Compatibility alias for local search")
+    search.add_argument("--search-url", help="Existing search MCP HTTP(S) endpoint; must expose web_search and web_fetch")
+    search.add_argument("--search-key-file", help="Private 0600 broker bearer-token file (not a Brave key)")
+    search.add_argument("--brave-key-file", help="Private 0600 Brave API key file to provision local search")
+    search.add_argument("--search-port", type=int, help="Local search loopback port (default 8889 or saved port)")
+    optional = p.add_argument_group("Optional checks and guidance")
+    omnigent = optional.add_mutually_exclusive_group()
     omnigent.add_argument("--with-omnigent", action="store_true", default=None, help="Require native-Pi prerequisites; no Omnigent install, session launch, or inference")
     omnigent.add_argument("--without-omnigent", dest="with_omnigent", action="store_false", help="Skip optional Omnigent checks")
-    p.add_argument("--update", action="store_true", help="Explicitly fetch/update selected writable module checkouts")
-    p.add_argument("--yes", action="store_true", help="Apply explicit choices without prompting; never download LLM weights")
-    p.add_argument("--plan", action="store_true", help="Show plan without commands, downloads, network or file changes")
+    optional.add_argument("--recovery", choices=["skip", "guide"], help="Independent pi-fallback prototype; no automatic installation")
     u = commands.add_parser("update", help="Update the saved installation; no repeated setup questionnaire")
     u.add_argument("--plan", action="store_true", help="Read-only saved update plan")
     u.add_argument("--modules-only", action="store_true", help="Update selected modules without upgrading the owning CLI/runtime")
     s = commands.add_parser("status", help="Run doctor for the last successfully selected modules (executes trusted extension checks)")
     s.add_argument("--require-omnigent", action="store_true", help="Also check native-Pi prerequisites without changing the saved selection")
+    p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
+    p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")
+    p.add_argument("--yes", action="store_true", help="Apply teardown, including stopping recorded shared services")
+    p.add_argument("--archive-config", action="store_true", help="Also detach gateway model entries/catalog links; preserve other providers and gateway source configuration")
     args = parser.parse_args()
     try:
         if args.command == "uninstall":
