@@ -101,8 +101,10 @@ than trusting the whole tap.
 ## Setup choices
 
 **CLI-first (0.1.17+):** normal setup resolves flags and saved/default
-settings, prints the plan, and asks only for final approval. Missing required
-inputs fail with actionable flag guidance. `--guided` explicitly opts into
+settings, prints the plan, and asks only for final approval. The 0.1.18+
+focused remote flow also collects missing endpoint/key-file references on a
+normal interactive terminal (see below). Other missing required inputs fail with
+actionable flag guidance. `--guided` explicitly opts into
 arrow-key menus for unspecified model access, browser, Omnigent, recovery, and
 search choices. Space toggles model-access additions in one checklist; Enter
 advances, Escape cancels. Explicit flags skip their questions. Reruns preserve
@@ -215,26 +217,48 @@ verify native provider authentication or inference.
 
 Available in Homebrew package 0.1.7 or newer with the updated shared module.
 Use `pi-shared update` to update an existing managed installation before
-selecting this mode.
+selecting this mode. The focused flow and safe-prefix support below require
+package 0.1.18+ and updated shared `pi-gateway` resources; do not
+point production profiles at development checkouts.
 
 ```bash
-pi-shared setup --mode existing-gateway \
+pi-shared setup --with existing-gateway # terminal: endpoint → key-file → approval
+pi-shared setup \
   --gateway-url https://gateway.example \
   --gateway-key-file "$HOME/.config/model-gateway/client.key" --plan
 # Replace --plan with --yes after review.
 ```
 
-Select this connection explicitly with `--mode existing-gateway` (gateway only)
-or `--with existing-gateway` (additive). Supply a gateway base URL
-(optional trailing `/v1`) and an existing absolute key-file path: regular,
-non-symlink, owned by you, mode `0600`. Setup never accepts a literal credential
-argument, provisions a key, or puts its contents in the receipt. HTTPS is the
-default safety boundary; HTTP requires `--allow-private-http` and a numeric
-private/Tailscale IP (hostnames require HTTPS). Trust the endpoint before sending
-it your client key, especially over HTTP without TLS.
+`--gateway-url` implies additive `--with existing-gateway` before component
+collection, preserving saved direct access. It rejects other explicit `--mode`
+values and local gateway/oMLX access; use `--with direct` for composition.
+`--mode existing-gateway` remains a gateway-only fresh topology shortcut.
+On a normal interactive input/output terminal, any of these remote selectors
+collects missing endpoint/key-file references using plain input, without
+requiring curses or `--guided`. The order is endpoint, key-file, optional HTTP
+consent, then plan approval. Guided remote selection also preserves native
+providers without a second provider question and skips unrelated browser,
+Omnigent, search, and recovery questions, resolving saved/default choices and
+honoring explicit flags. `--yes`, `--plan`, and non-TTY use never prompt;
+missing inputs require explicit flags or a saved connection.
+
+Supply an existing absolute key-file path: regular, non-symlink, owned by you,
+mode `0600`. Setup never accepts a literal credential argument, provisions a
+key, or puts its contents in the receipt. HTTPS is the default safety boundary.
+HTTP requires a numeric private/Tailscale IP and explicit `--allow-private-http`,
+saved consent for the same normalized endpoint, or the focused consent prompt.
+Consent is not assumed or transferred to a different endpoint; hostnames require
+HTTPS. Trust the endpoint before sending it your client key without TLS.
+
+Reverse-proxy prefixes such as `/model-gateway` are retained. Normalize by
+removing at most one trailing slash, then an optional terminal `/v1`. Every
+prefix segment must match `[A-Za-z0-9._~-]+`, except segments exactly `.` or `..`.
+Reject repeated slashes (including trailing `//`), percent encoding, backslashes,
+whitespace, credentials, queries, fragments, and ambiguous repeated terminal
+`/v1/v1` suffixes (which would normalize differently on a rerun).
 
 Approval names the endpoint/key-file reference and authorizes only authenticated
-catalog discovery (`GET /v1/models/canonical`), not inference. The shared
+catalog discovery (`GET <base-path>/v1/models/canonical`), not inference. The shared
 `pi-gateway connect` helper configures the existing managed CLI/model outputs
 after bootstrap, respecting `PI_SHARED_CLI_OUT`. No local model-gateway/oMLX is
 installed or started; no remote service operations or federation are performed.

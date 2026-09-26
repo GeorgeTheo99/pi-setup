@@ -223,10 +223,18 @@ def collect_components(args, previous, interactive):
                 "both": "Cloud and local models through a gateway",
                 "existing-gateway": "Connect to your own gateway; install no local gateway",
                 "later": "Configure models later"})
-            if args.mode in {"cloud", "local", "both", "existing-gateway"}:
+            if args.mode == "existing-gateway":
+                args.access = ["direct"]
+            elif args.mode in {"cloud", "local", "both"}:
                 if choose("Also enable native Pi providers alongside the gateway?", {
                         "yes": "Enable direct providers too", "no": "Gateway access only"}) == "yes":
                     args.access = ["direct"]
+    # A remote connection is a focused endpoint/key/approval flow. Resolve all
+    # unrelated components from explicit flags, saved choices, or fresh defaults.
+    remote = (args.mode == "existing-gateway" or "existing-gateway" in getattr(args, "access", [])
+              or args.mode is None and not args.local and previous
+              and previous.get("mode") == "existing-gateway")
+    interactive = interactive and not remote
     if args.without_browser is None:
         if previous and "browser-worker" in previous["modules"]:
             print("Browser: keeping the selected browser-worker service (removal requires uninstall).")
@@ -263,6 +271,15 @@ def setup(args):
     if state_path().is_symlink():
         raise RuntimeError("Refusing unsafe setup state file.")
     previous = read_state(allow_incomplete=True) if state_path().exists() else None
+    if args.gateway_url is not None:
+        if args.mode not in {None, "existing-gateway"}:
+            raise RuntimeError("--gateway-url conflicts with --mode other than existing-gateway; use --with direct to compose.")
+        args.access = list(dict.fromkeys([*getattr(args, "access", []), "existing-gateway"]))
+    remote_intent = args.mode == "existing-gateway" or "existing-gateway" in getattr(args, "access", [])
+    if remote_intent and (args.local or args.omlx or args.omlx_url
+                          or set(getattr(args, "access", [])) & {"model-gateway", "omlx"}
+                          or args.mode in {"cloud", "local", "both"}):
+        raise RuntimeError("Existing gateway access conflicts with local gateway/oMLX options; refusing to mix them.")
     collect_components(args, previous, interactive)
     saved_gateway = previous.get("external_gateway") if previous else None
     saved_direct = previous and previous.get("mode") == "direct"
@@ -295,25 +312,31 @@ def setup(args):
         raise RuntimeError("Gateway connection options require --mode existing-gateway.")
     gateway = None
     if remote:
+        # Plain terminal input is available for explicit remote intent without
+        # enabling curses or the unrelated guided component questionnaire.
+        prompt_gateway = interactive or (remote_intent and not args.yes and not args.plan
+                                         and sys.stdin.isatty() and sys.stdout.isatty())
         saved = saved_gateway or {}
         url = args.gateway_url if args.gateway_url is not None else saved.get("url")
         key_file = args.gateway_key_file if args.gateway_key_file is not None else saved.get("key_file")
-        if not url and interactive:
+        if not url and prompt_gateway:
             url = input("Existing gateway base URL (HTTPS preferred; no credentials): ").strip()
             if url.lower() == "cancel":
                 raise KeyboardInterrupt
-        if not key_file and interactive:
+        if not key_file and prompt_gateway:
             key_file = input("Absolute path to your existing private gateway key file (0600; not the key): ").strip()
             if key_file.lower() == "cancel":
                 raise KeyboardInterrupt
         if not url or not key_file:
-            raise RuntimeError("--mode existing-gateway requires --gateway-url and --gateway-key-file (or a saved connection).")
+            raise RuntimeError("Existing gateway setup requires --gateway-url and --gateway-key-file (or a saved connection); a terminal can collect missing values.")
         allow_http = args.allow_private_http
         if allow_http is None:
-            allow_http = saved.get("allow_private_http", False) if url.rstrip("/").removesuffix("/v1") == saved.get("url") else False
-        if url.startswith("http://") and not allow_http and interactive:
-            allow_http = choose("HTTP sends the gateway key without TLS. Is this a trusted private/Tailscale endpoint?", {
-                "no": "Do not connect; use HTTPS", "yes": "Explicitly allow private HTTP"}) == "yes"
+            allow_http = saved.get("allow_private_http", False) if existing_gateway.normalize_url(url) == saved.get("url") else False
+        if urllib.parse.urlsplit(url).scheme == "http" and not allow_http and prompt_gateway:
+            consent = input("HTTP sends the gateway key without TLS. Trust this private/Tailscale endpoint? [y/N] ").strip().lower()
+            if consent == "cancel":
+                raise KeyboardInterrupt
+            allow_http = consent in {"y", "yes"}
         gateway = existing_gateway.connection(url, key_file, allow_http)
     local = args.mode in {"local", "both"}
     args.reuse_omlx = False
@@ -340,7 +363,7 @@ def setup(args):
     if args.recovery is None:
         args.recovery = choose("Optional independent recovery kit:", {
             "skip": "Skip (default; no recovery download)",
-            "guide": "Show pi-fallback prototype preparation instructions"}) if interactive else "skip"
+            "guide": "Show pi-fallback prototype preparation instructions"}) if interactive and not remote else "skip"
 
     env = dict(os.environ)
     if previous:
@@ -376,7 +399,7 @@ def setup(args):
         raise RuntimeError("Existing gateway setup requires CLI bootstrap; remove PI_SHARED_BOOTSTRAP_LAUNCHERS=0.")
     code_root = Path(env.get("PI_SETUP_CODE_ROOT", str(Path.home() / ".local/share/pi-shared/modules"))).expanduser().resolve()
     args.search_selection, args.search_secrets = search_setup.collect(
-        args, previous, env, code_root, interactive, choose)
+        args, previous, env, code_root, interactive and not remote, choose)
     args.with_search = args.search_selection["kind"] == "local"
     flags = ["--minimal"]
     modules = ["pi-shared"]
@@ -419,7 +442,7 @@ def setup(args):
             print(f"  Direct external gateway: {gateway['url']}")
             print(f"  Existing key file reference: {gateway['key_file']} (owner-only 0600; contents never copied into the receipt)")
             print(f"  Private HTTP explicitly allowed: {gateway['allow_private_http']}")
-            print("  Authenticated catalog read: GET /v1/models/canonical; no inference requests.")
+            print(f"  Authenticated catalog read: GET {urllib.parse.urlsplit(gateway['url']).path}/v1/models/canonical; no inference requests.")
             print("  No local gateway or oMLX service installed; no remote service operations or credential provisioning.")
         search_setup.describe(args.search_selection)
         overrides = [name for name in ("PI_WEBSEARCH_MCP_URL", "SEARCH_MCP_URL", "WEBSEARCH_MCP_URL",
@@ -818,19 +841,19 @@ def update(args):
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.17")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.18")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
     p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")
     p.add_argument("--yes", action="store_true", help="Apply teardown, including stopping recorded shared services")
     p.add_argument("--archive-config", action="store_true", help="Also detach gateway model entries/catalog links; preserve other providers and gateway source configuration")
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
-    p.add_argument("--guided", action="store_true", help="Opt into arrow-key menus for unspecified choices; --plan still never prompts")
+    p.add_argument("--guided", action="store_true", help="Opt into arrow-key menus; remote gateway setup skips unrelated questions; --plan never prompts")
     p.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],
-                   help="Topology shortcut; defaults to saved selection or direct (no questionnaire)")
+                   help="Topology shortcut; defaults to saved selection or direct; existing-gateway prompts for missing connection inputs on a TTY")
     p.add_argument("--with", dest="access", action="append", choices=model_access.CHOICES, default=[],
                    help="Add model access without discarding saved choices; repeat for combinations. omlx also selects model-gateway.")
-    p.add_argument("--gateway-url", help="Existing remote gateway base URL (HTTPS preferred; optional /v1)")
+    p.add_argument("--gateway-url", help="Add an existing gateway (preserves direct providers); HTTPS base URL with optional safe path prefix and /v1; conflicts with other explicit modes/local access")
     p.add_argument("--gateway-key-file", help="Absolute path to an existing owner-only 0600 key file; never a literal key")
     p.add_argument("--allow-private-http", action="store_true", default=None,
                    help="Explicitly trust private/Tailscale HTTP for existing-gateway; the key is sent without TLS")

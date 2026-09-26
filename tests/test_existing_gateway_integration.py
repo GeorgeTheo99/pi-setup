@@ -18,7 +18,8 @@ from test_update import args as update_args
 
 
 @pytest.mark.skipif(not os.environ.get("PI_SHARED_TEST_ROOT"), reason="opt-in sibling shared integration")
-def test_real_shared_remote_setup_rerun_update_and_status(isolated, monkeypatch):
+@pytest.mark.parametrize("prefix", ["", "/model-gateway", "/one/two_3.~-X"])
+def test_real_shared_remote_setup_rerun_update_and_status(isolated, monkeypatch, prefix):
     home, calls = isolated
     shared = Path(os.environ["PI_SHARED_TEST_ROOT"]).resolve()
     for key in list(os.environ):
@@ -70,10 +71,12 @@ def test_real_shared_remote_setup_rerun_update_and_status(isolated, monkeypatch)
 
     monkeypatch.setattr(cli, "run", run)
     try:
-        assert cli.setup(options(mode="existing-gateway", gateway_url=f"http://127.0.0.1:{http.server_port}",
+        assert cli.setup(options(mode=None, gateway_url=f"http://127.0.0.1:{http.server_port}{prefix}/v1/",
                                  gateway_key_file=str(key_file), allow_private_http=True)) == 0
         receipt = cli.read_state()
         assert receipt["modules"] == ["pi-shared"]
+        assert receipt["model_access"] == ["direct", "existing-gateway"]
+        assert receipt["external_gateway"]["url"] == f"http://127.0.0.1:{http.server_port}{prefix}"
         assert receipt["services"] == {}
         assert "fixture-only-token" not in cli.state_path().read_text()
         config = Path(receipt["cli_file"])
@@ -88,7 +91,7 @@ def test_real_shared_remote_setup_rerun_update_and_status(isolated, monkeypatch)
         assert cli.update(update_args(modules_only=True)) == 0
         assert cli.status() == 0
         assert (config.read_bytes(), models.read_bytes()) == original
-        assert requests == [("/v1/models/canonical", "Bearer fixture-only-token")] * 2
+        assert requests == [(f"{prefix}/v1/models/canonical", "Bearer fixture-only-token")] * 2
         assert cli.read_state()["external_gateway"] == receipt["external_gateway"]
         assert (home / ".local/bin/pi-gateway").resolve() == shared / "bin/pi-gateway"
     finally:

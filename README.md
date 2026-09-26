@@ -72,9 +72,11 @@ module installers used below. The new CLI defaults writable module checkouts to
 ## CLI-first setup (0.1.17+)
 
 Setup resolves explicit flags, then saved selections, then defaults
-identically in terminals and scripts. `pi-shared setup` prints the plan and asks
-only `Apply this plan? [y/N]`; it never launches a component questionnaire.
-Missing required URLs or key-file inputs fail with the flag needed to fix them.
+identically in terminals and scripts. Plain `pi-shared setup` prints the plan and
+asks only `Apply this plan? [y/N]`; it never launches a component questionnaire.
+The focused existing-gateway flow below (0.1.18+) also collects missing
+endpoint/key-file references on a normal interactive terminal. Other missing
+required inputs fail with the flag needed to fix them.
 Fresh defaults remain direct providers, browser enabled, search skipped, and no
 Omnigent/recovery checks. Use `--without-browser` to omit Chromium.
 
@@ -182,6 +184,10 @@ under the same provider identity. These flags never remove selected services.
 
 Legacy `--mode cloud|local|both|existing-gateway` remains available for explicit
 gateway-only fresh setups; `both` means cloud/local, not direct/gateway.
+In the 0.1.18+ focused flow, `--gateway-url` implies additive
+`--with existing-gateway`, preserving saved direct access. It conflicts with
+other explicit `--mode` values and local gateway/oMLX options rather than
+silently overriding them. Use `--with direct` to compose explicitly.
 
 ### Native providers without a gateway
 
@@ -222,23 +228,44 @@ Available in Homebrew package 0.1.7 or newer, with the updated shared `pi-gatewa
 helper. Run `pi-shared update` on existing managed installs; confirm
 `existing-gateway` appears in `pi-shared setup --help` before using it.
 
-Use your existing gateway endpoint and an already-provisioned client key file:
+Use your existing gateway endpoint and an already-provisioned client key file.
+The focused flow requires Homebrew package 0.1.18+ and an updated shared
+`pi-gateway` module:
 
 ```bash
-pi-shared setup --mode existing-gateway \
+pi-shared setup --with existing-gateway # terminal: endpoint → key-file → approval
+pi-shared setup \
   --gateway-url https://gateway.example \
   --gateway-key-file "$HOME/.config/model-gateway/client.key" --plan
 # Review the plan, then replace --plan with --yes to connect.
 ```
 
+`--gateway-url` adds existing-gateway access before other choices are resolved;
+no `--mode` or `--guided` is needed. On an interactive input/output terminal,
+`--with existing-gateway`, `--mode existing-gateway`, or `--gateway-url` collects
+only missing endpoint/key-file references using plain input, then shows the plan
+for confirmation. Guided remote selection keeps native providers without asking
+again and skips browser, Omnigent, search, and recovery questions, retaining
+explicit flags and saved/default choices. `--yes`, `--plan`, and non-TTY use
+never prompt for missing values; supply the flags or reuse a saved connection.
+
 The key file must be an absolute, non-symlink, owner-only `0600` regular file.
 Never pass the key itself in arguments or embed it in the URL. HTTPS is preferred;
-trusted private/Tailscale **numeric IP** HTTP endpoints require the explicit
-`--allow-private-http` opt-in. A trailing `/v1` is accepted and normalized.
+trusted private/Tailscale **numeric IP** HTTP endpoints require explicit
+`--allow-private-http`, saved consent for the same normalized endpoint, or a
+focused terminal consent prompt. Consent is never assumed or reused for a
+different endpoint. Hostnames require HTTPS.
+
+Safe reverse-proxy prefixes such as `/model-gateway` are preserved. One trailing
+slash, then an optional terminal `/v1`, is removed. Prefix segments allow only
+ASCII letters, digits, `.`, `_`, `~`, and `-`, excluding `.` and `..` segments.
+Repeated slashes (including trailing `//`), percent encoding, backslashes,
+whitespace, credentials, query strings, fragments, and ambiguous repeated
+terminal `/v1/v1` suffixes are rejected.
 
 This selects shared resources and browser-worker (omit browsing with
 `--without-browser`), **not a local gateway or oMLX**. Setup reads the remote
-`/v1/models/canonical` catalog with your existing key and configures `pi models`
+`<base>/v1/models/canonical` catalog with your existing key and configures `pi models`
 and `pi <alias>`; it neither provisions credentials nor changes remote services,
 uses federation, downloads weights, or tests inference. Failed discovery leaves
 setup incomplete. The receipt stores only the endpoint, key-file reference and

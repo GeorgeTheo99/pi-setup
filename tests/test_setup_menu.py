@@ -114,6 +114,7 @@ def test_cli_rerun_never_repeats_component_questions(isolated, monkeypatch):
 ])
 def test_missing_cli_inputs_fail_without_prompts(isolated, monkeypatch, extra, error):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: False)
     monkeypatch.setattr("builtins.input", lambda _: pytest.fail("must fail, not prompt"))
     with pytest.raises(RuntimeError, match=error):
         cli.setup(options(yes=False, **extra))
@@ -307,3 +308,20 @@ def test_real_cli_default_only_requests_confirmation(tmp_path):
     code, output = run_pty(tmp_path, [], [("Apply this plan? [y/N]", b"n\r")])
     assert code == 0 and "Model connection:" not in output
     assert "Modules: pi-shared, browser-worker" in output
+
+
+@pytest.mark.parametrize("selection", ["with", "mode", "url"])
+def test_real_cli_remote_collects_only_missing_connection_and_approval(tmp_path, selection):
+    arguments = {"with": ["--with", "existing-gateway"], "mode": ["--mode", "existing-gateway"],
+                 "url": ["--gateway-url", "https://gateway.example/model-gateway/v1/"]}[selection]
+    actions = ([] if selection == "url" else [
+        ("Existing gateway base URL", b"https://gateway.example/model-gateway/v1/\r")]) + [
+        ("Absolute path to your existing private gateway key file", b"/private/missing.key\r"),
+        ("Apply this plan? [y/N]", b"n\r"),
+    ]
+    code, output = run_pty(tmp_path, arguments, actions)
+    assert code == 0 and "Cancelled; no installation changes made." in output, output
+    assert "Model connection:" not in output and "Public browser automation:" not in output
+    assert "GET /model-gateway/v1/models/canonical" in output
+    if selection != "mode":
+        assert "Model access: direct, existing-gateway" in output

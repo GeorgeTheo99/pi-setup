@@ -17,6 +17,7 @@ def answers(monkeypatch, values):
     iterator = iter(values)
     prompts = []
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
+    monkeypatch.setattr(sys.stdout, "isatty", lambda: True)
     def answer(prompt):
         prompts.append(prompt)
         return next(iterator)
@@ -88,11 +89,14 @@ def test_saved_components_preserved_without_reinstall_question(isolated, monkeyp
 
 def test_gateway_can_include_direct_providers(isolated, monkeypatch):
     args = wizard_options()
-    answers(monkeypatch, ["existing-gateway", "yes", "skip", "skip"])
+    prompts = answers(monkeypatch, ["existing-gateway"])
     cli.collect_components(args, None, True)
     mode, access = cli.model_access.resolve(args.mode, args.access, None)
     assert mode == "existing-gateway"
     assert access == ["direct", "existing-gateway"]
+    assert prompts == ["Model connection:"]
+    assert args.without_browser is False
+    assert args.with_omnigent is False
 
 
 def test_saved_model_access_addition_is_composable(isolated, monkeypatch):

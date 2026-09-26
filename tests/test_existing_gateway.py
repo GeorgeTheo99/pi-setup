@@ -65,7 +65,7 @@ def test_private_http_opt_in_is_forwarded_and_remembered(gateway):
 @pytest.mark.parametrize("extra", [dict(gateway_url=None), dict(gateway_key_file=None),
     dict(gateway_key_file="relative/key"), dict(gateway_url="http://100.64.1.2:9111"),
     dict(gateway_url="https://user:private@gateway.example"), dict(gateway_url="https://gateway.example?key=private"),
-    dict(gateway_url="https://gateway.example/#private"), dict(gateway_url="https://gateway.example/other"),
+    dict(gateway_url="https://gateway.example/#private"), dict(gateway_url="https://gateway.example/../other"),
     dict(gateway_url="https://gateway.example\nprivate"), dict(gateway_url="https://gateway.example:99999"),
     dict(gateway_url="file:///private"), dict(gateway_url="http://8.8.8.8", allow_private_http=True),
     dict(gateway_url="http://gateway.example", allow_private_http=True),
@@ -77,7 +77,7 @@ def test_incompatible_or_unsafe_options_fail_before_commands(gateway, extra):
     assert calls == [] and not cli.state_path().exists()
 
 
-@pytest.mark.parametrize("extra", [dict(gateway_url="https://gateway.example"), dict(gateway_key_file="/private/key"), dict(allow_private_http=True)])
+@pytest.mark.parametrize("extra", [dict(gateway_key_file="/private/key"), dict(allow_private_http=True)])
 def test_gateway_options_cannot_leak_into_other_modes(isolated, extra):
     with pytest.raises(RuntimeError, match="require --mode existing-gateway"):
         cli.setup(options(**extra))
@@ -115,7 +115,7 @@ def test_plan_never_probes_even_missing_key_or_executables(gateway, monkeypatch)
 def test_guided_connection_and_cancel_is_safe(gateway, monkeypatch, capsys):
     from test_questionnaire import answers
     _, calls, key = gateway
-    answers(monkeypatch, ["https://gateway.example", str(key), "skip", "no"])
+    answers(monkeypatch, ["https://gateway.example", str(key), "no"])
     assert cli.setup(options(mode=None, access=["existing-gateway"], yes=False, guided=True)) == 0
     assert "Model access: direct, existing-gateway" in capsys.readouterr().out
     assert not calls and not cli.state_path().exists()
@@ -188,7 +188,7 @@ def test_cannot_add_remote_over_previously_selected_local_gateway(gateway):
     _, calls, key = gateway
     cli.setup(options(mode="cloud")); calls.clear()
     before = cli.state_path().read_bytes()
-    with pytest.raises(RuntimeError, match="previously selected"):
+    with pytest.raises(RuntimeError, match="refusing to mix"):
         cli.setup(remote(key))
     assert cli.state_path().read_bytes() == before and not calls
 
@@ -263,10 +263,12 @@ def test_subprocess_plan_with_missing_key_is_read_only(tmp_path):
     shutil.copy2(ROOT / "bin/pi-shared", source / "bin/pi-shared")
     shutil.copytree(ROOT / "lib", source / "lib", ignore=shutil.ignore_patterns("__pycache__"))
     result = subprocess.run([sys.executable, str(source / "bin/pi-shared"), "setup", "--plan",
-                             "--mode", "existing-gateway", "--gateway-url", "https://gateway.example/v1",
+                             "--gateway-url", "https://gateway.example/model-gateway/v1/",
                              "--gateway-key-file", str(home / "missing")],
                             env={"HOME": str(home), "PATH": str(tmp_path)}, capture_output=True, text=True, timeout=10)
     assert result.returncode == 0, result.stderr
+    assert "Model access: direct, existing-gateway" in result.stdout
+    assert "GET /model-gateway/v1/models/canonical" in result.stdout
     assert list(home.iterdir()) == []
     assert not list(source.rglob("__pycache__"))
 

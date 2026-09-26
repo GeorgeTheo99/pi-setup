@@ -4,26 +4,38 @@ from __future__ import annotations
 import ipaddress
 import os
 from pathlib import Path
+import re
 import stat
 import urllib.parse
 
 
-def connection(url, key_file, allow_private_http=False):
+def normalize_url(url):
     # Validate before displaying or persisting a URL. Never echo rejected input:
     # it may contain a credential, query parameter, or terminal escape sequence.
     if not isinstance(url, str) or any(ord(c) < 33 or ord(c) > 126 for c in url):
         raise RuntimeError("Invalid gateway URL; use an HTTPS base URL without credentials")
     try:
         parsed = urllib.parse.urlsplit(url)
+        path = parsed.path.removesuffix("/")
+        segments = path.split("/")[1:] if path else []
         valid = (parsed.scheme in {"https", "http"} and parsed.hostname
                  and parsed.username is None and parsed.password is None
                  and not any(c in url for c in "?#\\%")
-                 and parsed.path in {"", "/", "/v1", "/v1/"}
+                 # A repeated API suffix would normalize again on saved reruns.
+                 and not path.endswith("/v1/v1")
+                 and all(re.fullmatch(r"[A-Za-z0-9._~-]+", segment)
+                         and segment not in {".", ".."} for segment in segments)
                  and (parsed.port is None or 1 <= parsed.port <= 65535))
     except ValueError:
         valid = False
     if not valid:
-        raise RuntimeError("Invalid gateway URL; use a base URL (optional /v1), without credentials, query or fragment")
+        raise RuntimeError("Invalid gateway URL; use a base URL with a safe optional path prefix (/v1 optional), without credentials, query or fragment")
+    return urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, path.removesuffix("/v1"), "", ""))
+
+
+def connection(url, key_file, allow_private_http=False):
+    normalized = normalize_url(url)
+    parsed = urllib.parse.urlsplit(normalized)
     if not isinstance(allow_private_http, bool):
         raise RuntimeError("Invalid gateway HTTP opt-in")
     if parsed.scheme == "http":
@@ -38,7 +50,7 @@ def connection(url, key_file, allow_private_http=False):
     if (not isinstance(key_file, str) or not key_file or not Path(key_file).is_absolute()
             or any(ord(c) < 32 or ord(c) == 127 for c in key_file)):
         raise RuntimeError("--gateway-key-file must be an absolute file path, not a credential value")
-    return {"url": urllib.parse.urlunsplit((parsed.scheme, parsed.netloc, "", "", "")),
+    return {"url": normalized,
             "key_file": key_file, "allow_private_http": allow_private_http}
 
 
