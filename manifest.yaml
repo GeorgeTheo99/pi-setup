@@ -52,8 +52,9 @@ modules:
     ref: main
     tier: optional
     description: >-
-      Loopback-only web search + page retrieval broker on 127.0.0.1:8889
-      (FastMCP + Brave Search). Powers pi-shared's web_search / web_fetch /
+      Local-first web search + page retrieval broker on 127.0.0.1:8889
+      (FastMCP + Brave Search), with separately configured opt-in Tailscale
+      HTTPS ingress. Powers pi-shared's web_search / web_fetch /
       deep_research tools. Requires a personal Brave Search API key.
     post_install_note: >-
       pi-shared setup --search local --brave-key-file accepts a private key file;

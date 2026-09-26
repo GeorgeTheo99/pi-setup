@@ -383,6 +383,14 @@ def setup(args):
             service_state = {**previous, "modules": [m for m in previous["modules"] if m in recorded],
                              "omlx": previous.get("omlx") if "omlx" in recorded else None}
         env.update(update_support.service_environment(service_state))
+    # Fresh/reinstalled managed search must not inherit a retained install.env
+    # hostname after teardown. Remote access requires explicit approval again.
+    env.setdefault("MCP_TAILNET_HOST", "")
+    # Only explicit approved setup may change ingress; routine update ignores
+    # calling-shell overrides and recovers the recorded service settings.
+    env.update({key: os.environ[key] for key in ("MCP_TAILNET_HOST", "MCP_TAILNET_PORT") if key in os.environ})
+    if "MCP_TAILNET_HOST" in env or "MCP_TAILNET_PORT" in env:
+        update_support.validate_tailnet_settings(env.get("MCP_TAILNET_HOST", ""), env.get("MCP_TAILNET_PORT", "8891"))
     env["PI_SHARED_DIRECT_ENABLED"] = str(int("direct" in args.model_access))
     env["PI_SHARED_ENABLE_GATEWAY"] = str(int("model-gateway" in args.model_access or remote))
     if not direct and (composing or previous and previous.get("settings", {}).get("PI_SHARED_DIRECT_ONLY") == "1"):
@@ -433,6 +441,9 @@ def setup(args):
             print("  Browser selection downloads Chromium. No LLM weights are downloaded.")
         else:
             print("  No browser or LLM weights are downloaded.")
+        if "local_web_search" in modules and "MCP_TAILNET_HOST" in env:
+            host = env["MCP_TAILNET_HOST"]
+            print(f"  Search tailnet ingress: {host or 'disabled'}; loopback port {env.get('MCP_TAILNET_PORT', '8891')}; Serve routing managed separately.")
         print("  Command: " + shlex.join([str(ROOT / "install.sh"), *flags]))
         print(f"  oMLX: {args.omlx or 'not selected'}; recovery: {args.recovery}; Omnigent checks: {bool(args.with_omnigent)}")
         if direct:
@@ -620,7 +631,8 @@ def read_state(allow_incomplete=False):
         if "omlx_version" in data and (not isinstance(data["omlx_version"], str) or not data["omlx_version"] or len(data["omlx_version"]) > 128):
             raise RuntimeError("Invalid applied oMLX version")
         for name, service in data.get("services", {}).items():
-            if (name not in (*data["modules"], "omlx") or not isinstance(service, dict)
+            optional_services = (update_support.TAILNET_SERVICE,) if "local_web_search" in data["modules"] else ()
+            if (name not in (*data["modules"], "omlx", *optional_services) or not isinstance(service, dict)
                     or set(service) != {"path", "identity"} or not isinstance(service["path"], str)
                     or not Path(service["path"]).is_absolute() or not isinstance(service["identity"], str)
                     or not re.fullmatch(r"[0-9a-f]{64}", service["identity"])):
@@ -788,7 +800,7 @@ def update(args):
             env = {**os.environ, "PI_SHARED_UPDATE_LOCK_FD": str(fd)}
             os.execve(launcher, [str(launcher), "update", "--modules-only"], env)
             return 0
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT"))}
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT", "MCP_TAILNET_"))}
         env.update(data["settings"])
         env.update(service_env)
         env.update(PI_SETUP_CODE_ROOT=data["code_root"], PI_SHARED_AGENT_DIR=data["agent_dir"],
@@ -872,7 +884,7 @@ Provider login, gateway onboarding and model downloads are separate steps.
 After setup: pi (use /login and /model); pi models lists configured routes.
 Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.19")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.20")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
     p = commands.add_parser(
         "setup", help="Explicitly install/configure modules and start their services",

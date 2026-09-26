@@ -399,11 +399,16 @@ pi-shared setup --search existing --search-url https://search.example/mcp --plan
 Older packaged releases and direct `install.sh` use still require provisioning
 `data/brave_key` (0600, parent 0700) per the search module README first.
 
-Existing servers must implement `web_search` and `web_fetch`; arbitrary MCP
-servers are not interchangeable. Authentication is scoped to the chosen endpoint
-and requires HTTPS or loopback HTTP. Environment overrides remain authoritative.
-External reachability/authentication and billable provider searches are not
-tested. `--search skip` preserves existing config and does not stop services.
+Existing servers must implement `web_search(query, num_results)` and
+`web_fetch(url, max_chars)` over direct HTTP JSON; arbitrary MCP servers and raw
+provider APIs are not interchangeable. Starting in 0.1.20, approved setup checks
+`tools/list` and basic argument schemas before writing search config/credentials.
+Redirects, SSE and negotiated-session inventories fail with explicit errors.
+This checks inventory reachability/authentication, not actual `tools/call`
+compatibility, result formats, or billable provider readiness. Plans, status and
+updates remain offline. Authentication is scoped to the chosen endpoint and
+requires HTTPS or loopback HTTP. Environment overrides remain authoritative.
+`--search skip` preserves existing config and does not stop services.
 Missing required credentials fail rather than claim success. Earlier approved
 actions are not rolled back; incomplete setups remain retryable.
 

@@ -1,4 +1,4 @@
-"""Offline search onboarding. collect never writes; apply runs only after approval.
+"""Search onboarding. collect stays offline; apply runs only after approval.
 
 Selections are JSON-safe references, never credentials. Pending secrets use only
 ``brave_key`` (local provider) and ``search_key`` (existing broker bearer token).
@@ -7,18 +7,25 @@ The caller must not persist, log, or pass that second dictionary to subprocesses
 from __future__ import annotations
 
 import getpass
+import http.client
 import ipaddress
 import json
 import os
 from pathlib import Path
 import stat
+import subprocess
+import sys
 import tempfile
+import urllib.error
 import urllib.parse
+import urllib.request
 import uuid
 import warnings
 
 
 BRAVE_SIGNUP = "https://api-dashboard.search.brave.com/"
+_PROBE_TIMEOUT = 10
+_PROBE_FAILURE = "Search tools/list could not connect or read a response; check endpoint, TLS and reachability"
 
 
 def _path(value):
@@ -346,8 +353,144 @@ def _provision(path, value):
         stream.write(value + "\n")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise RuntimeError("Search endpoint redirected tools/list; use the final MCP URL (redirects are disabled)")
+
+
+def _validate_tools(tools):
+    """Check advertised names/basic argument shapes, not arbitrary JSON Schema semantics."""
+    contracts = {"web_search": {"query": "string", "num_results": "integer"},
+                 "web_fetch": {"url": "string", "max_chars": "integer"}}
+    for name, arguments in contracts.items():
+        matches = [tool for tool in tools if tool.get("name") == name]
+        if not matches:
+            raise RuntimeError(f"Search endpoint is missing required tool {name}; a generic MCP server is not sufficient")
+        if len(matches) != 1:
+            raise RuntimeError(f"Search inventory has duplicate {name} definitions")
+        schema = matches[0].get("inputSchema")
+        if not isinstance(schema, dict) or schema.get("type") != "object":
+            raise RuntimeError(f"Search tool {name} must advertise an object inputSchema")
+        properties = schema.get("properties")
+        required = schema.get("required", [])
+        if (not isinstance(properties, dict) or not isinstance(required, list)
+                or any(not isinstance(key, str) for key in required)):
+            raise RuntimeError(f"Search tool {name} has an invalid argument schema")
+        if set(required) - arguments.keys():
+            raise RuntimeError(f"Search tool {name} requires arguments the Pi client does not send")
+        for scope in [schema, *(properties.get(key) for key in arguments)]:
+            if isinstance(scope, dict) and set(scope) & {"$ref", "allOf", "anyOf", "oneOf", "not", "if"}:
+                raise RuntimeError(f"Cannot verify composed/referenced inputSchema for {name}; advertise explicit argument types")
+        for key, expected in arguments.items():
+            prop = properties.get(key)
+            types = prop.get("type") if isinstance(prop, dict) else None
+            types = [types] if isinstance(types, str) else types
+            allowed = {expected, "number"} if expected == "integer" else {expected}
+            if (not isinstance(types, list) or not all(isinstance(item, str) for item in types)
+                    or not allowed.intersection(types)):
+                raise RuntimeError(f"Search tool {name} must accept {key} as {expected}")
+
+
+def _probe_existing(url, token=None):
+    """Bound the entire inventory, including DNS, headers, body and pagination.
+
+    A socket timeout only bounds inactivity, and Python signal handlers cannot
+    reliably interrupt libc DNS resolution. Isolate the synchronous probe in a
+    process instead: subprocess.run kills and reaps it before timeout returns.
+    Credentials travel only over stdin, never argv, environment or disk. This
+    works on macOS/Linux without forking a potentially multithreaded interpreter.
+    """
+    _url(url, token is not None)
+    if token is not None:
+        token = _secret(token)
+    try:
+        result = subprocess.run(
+            [sys.executable, str(Path(__file__).resolve()), "--probe-existing"],
+            input=json.dumps([url, token]), text=True, capture_output=True,
+            timeout=_PROBE_TIMEOUT, check=False,
+        )
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("Search tools/list exceeded the overall inventory deadline") from None
+    except OSError:
+        raise RuntimeError(_PROBE_FAILURE) from None
+    if result.returncode != 0:
+        # Only our worker's controlled diagnostic is safe to display. Never
+        # surface stderr (tracebacks) or subprocess exceptions containing input.
+        if result.returncode == 1:
+            try:
+                message = json.loads(result.stdout)
+            except (ValueError, TypeError):
+                message = None
+            if isinstance(message, str):
+                raise RuntimeError(message) from None
+        raise RuntimeError(_PROBE_FAILURE)
+    print("Search inventory checked: web_search/web_fetch names and basic argument types; "
+          "tools/call compatibility and provider readiness NOT tested (no tool calls).")
+
+
+def _read_inventory(url, token=None):
+    """Read tools/list only: no initialize, session, SSE or real tool calls.
+
+    Inventory success cannot prove tools/call transport or provider readiness.
+    Never include response bodies/headers or underlying errors in diagnostics.
+    """
+    _url(url, token is not None)
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if token is not None:
+        headers["Authorization"] = "Bearer " + _secret(token)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+    tools, cursors = [], set()
+    params = {}
+    for page in range(10):
+        request_id = f"pi-search-setup-{page}"
+        payload = {"jsonrpc": "2.0", "id": request_id, "method": "tools/list", "params": params}
+        request = urllib.request.Request(url, data=json.dumps(payload).encode(), headers=headers, method="POST")
+        try:
+            with opener.open(request, timeout=_PROBE_TIMEOUT) as response:
+                if response.headers.get_content_type() == "text/event-stream":
+                    raise RuntimeError("Search endpoint returned SSE; Pi requires direct HTTP JSON, not an SSE stream")
+                if response.headers.get("Mcp-Session-Id") is not None:
+                    raise RuntimeError("Search endpoint issued an MCP session; use a session-free HTTP JSON endpoint")
+                if response.headers.get_content_type() != "application/json":
+                    raise RuntimeError("Search endpoint must return application/json for direct tools/list requests")
+                raw = response.read(1048577)
+            if len(raw) > 1048576:
+                raise RuntimeError("Search tools/list response exceeded the 1 MiB size limit")
+            data = json.loads(raw)
+        except urllib.error.HTTPError as exc:
+            status = exc.code
+            exc.close()
+            if status in {401, 403}:
+                raise RuntimeError("Search tools/list authentication failed; check --search-key-file and endpoint access") from None
+            raise RuntimeError(f"Search tools/list returned HTTP {status}; use direct HTTP JSON without redirects, initialize, session or SSE negotiation") from None
+        except (OSError, urllib.error.URLError, http.client.HTTPException):
+            raise RuntimeError(_PROBE_FAILURE) from None
+        except (ValueError, RecursionError):
+            raise RuntimeError("Search tools/list returned invalid JSON; Pi requires direct HTTP JSON, not SSE") from None
+        if (not isinstance(data, dict) or data.get("jsonrpc") != "2.0"
+                or data.get("id") != request_id):
+            raise RuntimeError("Search tools/list returned an invalid JSON-RPC response")
+        if "error" in data:
+            raise RuntimeError("Search tools/list failed; the endpoint must support inventory without initialize/session negotiation")
+        result = data.get("result")
+        if (not isinstance(result, dict) or not isinstance(result.get("tools"), list)
+                or any(not isinstance(tool, dict) or not isinstance(tool.get("name"), str)
+                       for tool in result["tools"])):
+            raise RuntimeError("Search tools/list returned an invalid tool inventory")
+        tools.extend(result["tools"])
+        cursor = result.get("nextCursor")
+        if cursor is None:
+            _validate_tools(tools)
+            return
+        if not isinstance(cursor, str) or not cursor or cursor in cursors:
+            raise RuntimeError("Search tools/list returned an invalid or repeated pagination cursor")
+        cursors.add(cursor)
+        params = {"cursor": cursor}
+    raise RuntimeError("Search tools/list exceeded the 10-page inventory limit")
+
+
 def apply(selection, secrets, env):
-    """Apply an approved selection. No network/service operations; return None.
+    """Apply an approved selection; probe existing inventory before any search writes.
 
     Missing local keys without pending secrets are left to the component installer
     (legacy --with-search compatibility); collect enforces the new CLI policy.
@@ -378,6 +521,11 @@ def apply(selection, secrets, env):
         key = _path(selection["key_file"])
         value = pending.get("search_key")
         _key_preflight(key, value)
+    if kind == "existing":
+        token = value
+        if token is None and key is not None:
+            token = _secret(_read_file(key))
+        _probe_existing(selection["url"], token)
     _private_directory(config_path.parent)
     if kind == "local":
         _private_directory(data)
@@ -446,5 +594,22 @@ def describe(selection):
         print(f"Search: {selection['kind']} — {selection['url']}")
         if selection["kind"] == "local":
             print(f"Search data: {selection['data_dir']} (port {selection['port']})")
-        elif "key_file" in selection:
-            print(f"Search bearer key file: {selection['key_file']} (scoped to this exact endpoint)")
+        else:
+            if "key_file" in selection:
+                print(f"Search bearer key file: {selection['key_file']} (scoped to this exact endpoint)")
+            print("Search setup approval permits POST tools/list inventory checks before saving routing; "
+                  "no tools/call, initialize, session or SSE negotiation. Plans and updates stay offline.")
+
+
+if __name__ == "__main__":
+    if sys.argv[1:] != ["--probe-existing"]:
+        sys.exit(2)
+    try:
+        _read_inventory(*json.load(sys.stdin))
+    except RuntimeError as exc:
+        print(json.dumps(str(exc)))
+        sys.exit(1)
+    except Exception:
+        # No endpoint, credential, response or underlying exception diagnostics.
+        print(json.dumps(_PROBE_FAILURE))
+        sys.exit(1)

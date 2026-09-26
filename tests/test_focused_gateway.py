@@ -63,6 +63,7 @@ def test_url_conflicts_fail_before_component_collection(isolated, monkeypatch, e
 
 
 def test_url_is_additive_over_saved_direct_selection(direct, monkeypatch):
+    monkeypatch.setattr(cli.search_setup, "_probe_existing", lambda *a: None)
     home, calls = direct
     monkeypatch.setattr(cli.update_support, "service_environment", lambda _: {})
     cli.setup(options(mode=None, without_browser=False, with_omnigent=True, recovery="guide",

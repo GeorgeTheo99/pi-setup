@@ -17,6 +17,8 @@ SETTINGS = (
     "MODEL_GATEWAY_LAUNCHD_LABEL", "MODEL_GATEWAY_PLIST_DIR", "MODEL_GATEWAY_BIN_DIR",
 )
 GATEWAY_ENV = set("MODEL_GATEWAY_HOST MODEL_GATEWAY_PORT MODEL_GATEWAY_CONFIG MODEL_GATEWAY_MODEL_INFO MODEL_GATEWAY_MODEL_INFO_SOURCE MODEL_GATEWAY_LEDGER_PATH GATEWAY_VISION_FALLBACK GATEWAY_VISION_FALLBACK_LOCAL GATEWAY_VISION_FALLBACK_CLOUD GATEWAY_VISION_FALLBACK_MODE GATEWAY_VISION_FALLBACK_MAX_IMAGES GATEWAY_VISION_OBSERVATION_CACHE_TTL_SECONDS GATEWAY_VISION_EXTRACTION_TOTAL_TIMEOUT_SECONDS MODEL_GATEWAY_LOG_DIR MODEL_GATEWAY_BACKUP_DIR MODEL_GATEWAY_LEGACY_BACKUP_DIRS".split())
+TAILNET_SERVICE = "local_web_search_tailnet"
+TAILNET_LABEL = "com.local.mcp-websearch-tailnet"
 SEARCH_ENV = set("MCP_PORT WEBSEARCH_PROVIDER_STACK WEBSEARCH_SEARCH_MODE WEBSEARCH_TOTAL_TIMEOUT WEBSEARCH_BRAVE_TIMEOUT LOCAL_SEARCH_DATA_DIR LOCAL_SEARCH_TELEMETRY_ENABLED DECODO_FALLBACK_ENABLED DECODO_TIMEOUT DECODO_RESPONSE_MAX_BYTES WEBSEARCH_FETCH_OPERATION_TIMEOUT FASTMCP_SHOW_SERVER_BANNER".split())
 
 
@@ -107,7 +109,69 @@ def service_snapshot(modules, settings, omlx=None):
             # Homebrew service plists may be owner-only writable but world readable.
             data = read_service(path, name)
             result[name] = {"path": str(path), "identity": identity(data)}
+    if "local_web_search" in modules:
+        path = agents / (TAILNET_LABEL + ".plist")
+        if path.exists() or path.is_symlink():
+            primary = read_service(paths["local_web_search"], "local_web_search")
+            ingress = read_service(path, TAILNET_SERVICE)
+            tailnet_environment(primary, ingress)
+            result[TAILNET_SERVICE] = {"path": str(path), "identity": identity(ingress)}
     return result
+
+
+def tailnet_path():
+    return Path.home() / "Library/LaunchAgents" / (TAILNET_LABEL + ".plist")
+
+
+def validate_tailnet_settings(host, port):
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    if (host and (len(host) > 253 or not re.fullmatch(rf"{label}\.{label}\.ts\.net", host))
+            or not re.fullmatch(r"[0-9]{1,5}", port) or not 1 <= int(port) <= 65535):
+        raise RuntimeError("Invalid tailnet ingress hostname/port")
+
+
+def tailnet_environment(primary, ingress):
+    """Validate the optional ingress belongs to this exact broker installation."""
+    args = primary.get("ProgramArguments")
+    if (not isinstance(args, list) or not args
+            or ingress.get("Label") != TAILNET_LABEL
+            or ingress.get("WorkingDirectory") != primary.get("WorkingDirectory")
+            or ingress.get("ProgramArguments") != [*args, "--tailnet"]):
+        raise RuntimeError("Tailnet ingress ownership does not match the local search broker")
+    env = ingress.get("EnvironmentVariables", {})
+    if (not isinstance(env, dict)
+            or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items())
+            or set(env) - (SEARCH_ENV | {"MCP_TAILNET_HOST"})):
+        raise RuntimeError("Unsupported tailnet ingress environment")
+    host, port = env.get("MCP_TAILNET_HOST", ""), env.get("MCP_PORT", "")
+    validate_tailnet_settings(host, port)
+    if not host:
+        raise RuntimeError("Tailnet ingress hostname is missing")
+    local_env = primary.get("EnvironmentVariables", {})
+    if (int(port) == int(local_env.get("MCP_PORT", "8889"))
+            or {k: v for k, v in env.items() if k not in {"MCP_PORT", "MCP_TAILNET_HOST"}}
+            != {k: v for k, v in local_env.items() if k != "MCP_PORT"}):
+        raise RuntimeError("Tailnet ingress settings do not match the local search broker")
+    return {"MCP_TAILNET_HOST": host, "MCP_TAILNET_PORT": port}
+
+
+def check_tailnet_ownership(data):
+    """Never silently adopt or forget an independently configured ingress."""
+    if "local_web_search" not in data["modules"]:
+        return None
+    saved = data.get("services", {}).get(TAILNET_SERVICE)
+    path = tailnet_path()
+    if saved is None:
+        if path.exists() or path.is_symlink():
+            raise RuntimeError("Unrecorded tailnet ingress; disable it with the search operator, then re-enable through approved pi-shared setup")
+        return None
+    if not isinstance(saved, dict) or saved.get("path") != str(path):
+        raise RuntimeError("Invalid saved tailnet ingress path")
+    if path.exists() or path.is_symlink():
+        ingress = read_service(path, TAILNET_SERVICE)
+        if identity(ingress) != saved.get("identity"):
+            raise RuntimeError("Tailnet ingress service ownership changed; refusing automatic adoption")
+    return saved
 
 
 def read_service(path, name):
@@ -124,7 +188,8 @@ def read_service(path, name):
 
 def service_environment(data):
     """Recover current component settings, not stale copies or secrets in receipts."""
-    result = {}
+    # Absence of recorded ingress means disabled, never 'inherit install.env'.
+    result = {"MCP_TAILNET_HOST": ""} if "local_web_search" in data["modules"] else {}
     names = [m for m in data["modules"] if m != "pi-shared"]
     if data.get("omlx") == "install":
         names.append("omlx")
@@ -152,6 +217,11 @@ def service_environment(data):
                 result["LOCAL_SEARCH_LOG_DIR"] = str(Path(log).parent)
         # Browser preserves its complete installed environment itself. oMLX
         # remains managed through Homebrew; neither environment is copied here.
+    saved = check_tailnet_ownership(data)
+    if saved:
+        primary = read_service(Path(data["services"]["local_web_search"]["path"]), "local_web_search")
+        ingress = read_service(Path(saved["path"]), TAILNET_SERVICE)
+        result.update(tailnet_environment(primary, ingress))
     return result
 
 

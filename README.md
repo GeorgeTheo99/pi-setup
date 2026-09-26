@@ -341,13 +341,28 @@ and credentials are preserved. `--with-search` remains a compatibility alias.
 tools or uninstall a previously selected service.
 
 Existing MCP servers must implement `web_search(query, num_results)` and
-`web_fetch(url, max_chars)`. Setup saves routing in `~/.pi/research/config.json`,
+`web_fetch(url, max_chars)` as direct HTTP JSON `tools/call` requests. The client
+does not perform MCP initialization, session management, or SSE negotiation.
+After approval, setup sends only `tools/list` (including bounded pagination),
+checking the advertised tool names, explicit object argument schemas, string
+`query`/`url`, numeric `num_results`/`max_chars`, and no extra required arguments.
+Composed/referenced schemas that cannot be checked are rejected. Redirects,
+SSE responses, issued MCP sessions, and non-JSON inventories are rejected too.
+A failed check leaves search routing and credential files unchanged.
+
+Setup saves routing in `~/.pi/research/config.json`,
 preserving browser/unrelated fields; token values stay in private `0600` files.
 Bearer authentication requires HTTPS or loopback HTTP. Guided reruns can
 change the endpoint, replace the key reference, or remove authentication. A new
 hidden token uses a fresh private file when needed; old credentials are retained,
-not overwritten. Setup does not contact external search servers or issue billable provider queries; configuration is not
-proof of readiness. Environment endpoint/token overrides still take precedence.
+not overwritten. `--plan`, collection, status, and updates do not contact search
+servers. Approved existing-endpoint setup checks inventory, but never calls
+`web_search` or `web_fetch` or intentionally issues billable provider queries.
+Inventory success is not proof of `tools/call` transport, result format, provider
+credentials, or runtime readiness; schema constraints beyond basic types and
+required arguments (such as ranges/patterns) are not evaluated. Servers that expose
+inventory without sessions but require sessions for calls cannot be detected by
+this check. Environment endpoint/token overrides still take precedence.
 
 For the legacy `install.sh` path or older packages, provision an owner-only Brave
 key **before** installation. Pre-clone the module and follow its README:

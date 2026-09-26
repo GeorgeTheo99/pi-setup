@@ -159,6 +159,8 @@ def test_existing_search_survives_setup_and_module_update(isolated, monkeypatch)
     home, calls = isolated
     monkeypatch.setattr(cli.update_support, "runtime_versions", lambda: VERSIONS)
     monkeypatch.setattr(cli.update_support, "revisions", lambda *a: {})
+    probes = []
+    monkeypatch.setattr(cli.search_setup, "_probe_existing", lambda *args: probes.append(args))
     cli.setup(options(search="existing", search_url="https://search.example/mcp"))
     assert "local_web_search" not in cli.read_state()["modules"]
     selected = cli.read_state()["search"]
@@ -171,10 +173,12 @@ def test_existing_search_survives_setup_and_module_update(isolated, monkeypatch)
         original(command, **kwargs)
     monkeypatch.setattr(cli, "run", installer)
     cli.update(update_args())
+    assert probes == [(selected["url"], None)] * 2  # setup probes; update stays offline
     assert json.loads(config.read_text()) == {"websearchMcpUrl": selected["url"], "browserEnabled": True}
 
 
 def test_search_plan_warns_about_environment_overrides_without_values(isolated, monkeypatch, capsys):
+    monkeypatch.setattr(cli.search_setup, "_probe_existing", lambda *a: pytest.fail("plan must stay offline"))
     monkeypatch.setenv("SEARCH_MCP_URL", "https://override.example/mcp?token=do-not-print")
     monkeypatch.setenv("SEARCH_MCP_API_KEY", "private-override-value")
     cli.setup(options(plan=True, search="existing", search_url="https://search.example/mcp"))

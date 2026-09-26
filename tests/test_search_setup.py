@@ -27,6 +27,13 @@ def home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture
+def compatible_inventory(monkeypatch):
+    calls = []
+    monkeypatch.setattr(search, "_probe_existing", lambda *args: calls.append(args))
+    return calls
+
+
 def forbidden(*args, **kwargs):
     pytest.fail("Unexpected prompt, credential read, or network operation")
 
@@ -87,7 +94,7 @@ def test_apply_local_private_files_env_and_idempotency(home):
     assert snapshot(home) == before
 
 
-def test_existing_reference_config_preserves_browser_and_scopes_auth(home, capsys):
+def test_existing_reference_config_preserves_browser_and_scopes_auth(home, capsys, compatible_inventory):
     key = private(home / "keys/bearer")
     config = private(home / ".pi/research/config.json", json.dumps({
         "browser": {"url": "http://127.0.0.1:9000"}, "other": [1, 2],
@@ -103,10 +110,11 @@ def test_existing_reference_config_preserves_browser_and_scopes_auth(home, capsy
                     "websearchMcpUrl": selected["url"], "websearchMcpKeyFile": str(key),
                     "websearchMcpKeyUrl": selected["url"]}
     assert TOKEN not in config.read_text() + json.dumps(selected)
+    assert compatible_inventory == [(selected["url"], TOKEN)]
 
 
 @pytest.mark.parametrize("kind", ["local", "existing"])
-def test_switch_to_unauthenticated_removes_old_auth_only(home, kind):
+def test_switch_to_unauthenticated_removes_old_auth_only(home, kind, compatible_inventory):
     config = private(home / ".pi/research/config.json", json.dumps({
         "browserMcpUrl": "http://browser/mcp", "websearchMcpKeyFile": "old-key",
         "websearchMcpKeyUrl": "https://old/mcp", "mcpUrl": "old", "unrelated": True}))
@@ -243,7 +251,7 @@ def test_interactive_remote_http_rejected_before_hidden_token_prompt(home):
     assert not list(home.iterdir())
 
 
-def test_interactive_existing_hidden_token_is_pending_until_apply(home, monkeypatch):
+def test_interactive_existing_hidden_token_is_pending_until_apply(home, monkeypatch, compatible_inventory):
     answers = iter(["existing", "hidden"])
     monkeypatch.setattr("builtins.input", lambda _: "https://example.test/mcp")
     monkeypatch.setattr(search.getpass, "getpass", lambda _: TOKEN)
@@ -253,6 +261,7 @@ def test_interactive_existing_hidden_token_is_pending_until_apply(home, monkeypa
     search.apply(selected, secrets, {})
     assert Path(selected["key_file"]).read_text() == TOKEN + "\n"
     assert TOKEN not in (home / ".pi/research/config.json").read_text()
+    assert compatible_inventory == [(selected["url"], TOKEN)]
 
 
 @pytest.mark.parametrize("stage", ["choice", "path", "hidden"])
@@ -529,7 +538,7 @@ def test_explicit_existing_connection_flags_skip_saved_value_prompts(home):
 
 
 @pytest.mark.parametrize("url", ["https://old.example/mcp", "https://new.example/mcp"])
-def test_hidden_token_reconfiguration_applies_without_overwriting_original(home, monkeypatch, url):
+def test_hidden_token_reconfiguration_applies_without_overwriting_original(home, monkeypatch, url, compatible_inventory):
     old = private(home / ".pi/research/search_key", "synthetic-old-token")
     saved = {"kind": "existing", "url": "https://old.example/mcp", "key_file": str(old)}
     search.apply(saved, {}, {})

@@ -123,6 +123,16 @@ including custom config/catalog/ledger/log/backup paths. Unsupported custom
 environment entries fail closed rather than being discarded. Browser-worker
 recovers its own persisted settings. A replaced service identity is not adopted.
 
+Package 0.1.20 also records the optional `local_web_search_tailnet` LaunchAgent,
+validates it against the primary broker's executable/settings, and preserves its
+hostname and separate port. Routine updates ignore `MCP_TAILNET_*` shell
+overrides. To enable/change/disable ingress, use explicit approved setup with
+`MCP_TAILNET_HOST` (empty disables) and optional `MCP_TAILNET_PORT`; the plan names
+the change. Tailscale Serve routes remain separately managed. Uninstall stops
+recorded ingress before the primary broker. An unrecorded ingress blocks
+update/uninstall: disable it with the search operator, then enable it through
+approved managed setup so ownership is captured.
+
 ## Unified CLI refresh
 
 New installs route model aliases through the packaged `pi` command instead of

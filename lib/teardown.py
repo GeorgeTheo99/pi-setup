@@ -189,7 +189,12 @@ def build(data, archive_config=False):
         path = bindir / name
         if path.is_symlink() and path.resolve() == (shared / 'bin' / name).resolve():
             plan.add(path, 'Unlink shared helper')
-    for name in data['modules']:
+    service_names = list(data['modules'])
+    if update_support.check_tailnet_ownership(data):
+        # Stop remote admission before the local broker. Generic ownership checks
+        # below also handle retryable partially completed teardown.
+        service_names.insert(0, update_support.TAILNET_SERVICE)
+    for name in service_names:
         if name == 'pi-shared':
             continue
         saved = data.get('services', {}).get(name)
