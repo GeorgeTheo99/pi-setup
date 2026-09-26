@@ -100,6 +100,13 @@ than trusting the whole tap.
 
 ## Setup choices
 
+**Questionnaire (0.1.16+):** interactive setup asks
+for each unspecified component choice before the plan: model access, browser,
+Omnigent checks, recovery guidance, and search. Explicit flags skip those
+questions. Reruns offer saved model access plus additive choices and preserve
+owned services; they are not an uninstall workflow. Noninteractive defaults
+remain unchanged. Browser rows below describe defaults, not mandatory installs.
+
 | Choice | What setup selects | What still requires user configuration |
 |---|---|---|
 | Direct (0.1.8+) | Shared resources and browser-worker; native Pi providers, no gateway/oMLX | Native Pi `/login` or supported key and `/model`; inference remains untested |
@@ -343,19 +350,31 @@ model-gateway, not directly to oMLX.
 
 ## Search and recovery
 
-Search is opt-in and requires a credential **before** its module installer runs:
+Search is opt-in. The wizard in package 0.1.16+ offers local Brave search, an existing
+compatible MCP endpoint, or skipping provisioning. It explains key acquisition
+and accepts hidden input or an existing private key file. No secrets are written
+until the final plan is approved; receipts/config contain only paths, not keys.
+Fresh local data lives outside the module checkout, so no pre-clone is needed.
 
 ```bash
-# Pre-clone local_web_search under the selected module root and follow its
-# README to create owner-only data/brave_key (0600, parent directory 0700).
-# A custom LOCAL_SEARCH_DATA_DIR is also supported by the module installer.
-pi-shared setup --mode cloud --with-search --plan
-pi-shared setup --mode cloud --with-search --yes
+pi-shared setup --search local --brave-key-file /absolute/private/brave.key --plan
+pi-shared setup --search existing --search-url https://search.example/mcp --plan
+# Optional existing-server authentication: --search-key-file /absolute/private/broker.key
+# Review, then replace --plan with --yes. Plans never read keys or contact servers.
 ```
 
-Setup does not collect, log or store API keys. A missing credential causes the
-search installer to fail, not a false success. Earlier module installs may
-already have completed; retries use the original idempotent installer.
+`--search-port` selects a local port; saved local service settings are retained.
+`--with-search` keeps compatibility with previously pre-provisioned installs.
+Older packaged releases and direct `install.sh` use still require provisioning
+`data/brave_key` (0600, parent 0700) per the search module README first.
+
+Existing servers must implement `web_search` and `web_fetch`; arbitrary MCP
+servers are not interchangeable. Authentication is scoped to the chosen endpoint
+and requires HTTPS or loopback HTTP. Environment overrides remain authoritative.
+External reachability/authentication and billable provider searches are not
+tested. `--search skip` preserves existing config and does not stop services.
+Missing required credentials fail rather than claim success. Earlier approved
+actions are not rolled back; incomplete setups remain retryable.
 
 `pi-fallback` remains a **separate optional recovery prototype**, independent of
 Pi profiles, oMLX, gateway, cloud auth and the shared package. `--recovery guide`

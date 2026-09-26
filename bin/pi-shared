@@ -31,6 +31,7 @@ import update_support
 import existing_gateway
 import model_access
 import direct_setup
+import search_setup
 
 FORMULA = "georgetheo99/tap/pi-shared"
 MODULES = {"pi-shared", "model-gateway", "browser-worker", "local_web_search"}
@@ -203,21 +204,69 @@ def guidance(args, code_root):
               "passes without a skipped check. No published Homebrew recovery formula is assumed.")
 
 
+def collect_components(args, previous, interactive):
+    """Ask only for unspecified choices; saved services are never removed here."""
+    if interactive and args.mode is None and not args.local and not getattr(args, "access", []):
+        if previous:
+            print("Saved model access: " + ", ".join(sorted(model_access.saved(previous))))
+            additions = []
+            while True:
+                choice = choose("Model access (existing selections are preserved):", {
+                    "keep": "Continue with these choices", "direct": "Add native Pi providers",
+                    "model-gateway": "Add a local model gateway", "existing-gateway": "Add an existing remote gateway",
+                    "omlx": "Add local oMLX serving (with model gateway)"})
+                if choice == "keep":
+                    break
+                additions.append(choice)
+                # Reject conflicting topologies before asking more questions.
+                model_access.resolve(previous.get("mode", "direct"), additions, previous)
+                print("Added: " + choice)
+            args.access = additions
+        else:
+            args.mode = choose("Model connection:", {
+                "direct": "Native Pi subscriptions/API keys (recommended; no gateway)",
+                "cloud": "Install a local gateway for cloud providers",
+                "local": "Local models through oMLX and a gateway",
+                "both": "Cloud and local models through a gateway",
+                "existing-gateway": "Connect to your own gateway; install no local gateway",
+                "later": "Configure models later"})
+            if args.mode in {"cloud", "local", "both", "existing-gateway"}:
+                if choose("Also enable native Pi providers alongside the gateway?", {
+                        "yes": "Enable direct providers too", "no": "Gateway access only"}) == "yes":
+                    args.access = ["direct"]
+    if args.without_browser is None:
+        if previous and "browser-worker" in previous["modules"]:
+            print("Browser: keeping the selected browser-worker service (removal requires uninstall).")
+            args.without_browser = False
+        elif interactive:
+            args.without_browser = choose("Public browser automation:", {
+                "install": "Install browser-worker and download Chromium",
+                "skip": "Do not install a browser"}) == "skip"
+        else:
+            args.without_browser = bool(previous and "browser-worker" not in previous["modules"])
+    if args.with_omnigent is None:
+        if previous and previous.get("omnigent"):
+            args.with_omnigent = True
+        elif interactive:
+            args.with_omnigent = choose("Optional Omnigent compatibility checks:", {
+                "skip": "Skip", "check": "Check native-Pi prerequisites; does not install Omnigent"}) == "check"
+        else:
+            args.with_omnigent = False
+    if args.recovery is None and previous:
+        args.recovery = previous.get("recovery")
+
+
 def setup(args):
     interactive = sys.stdin.isatty() and not args.yes and not args.plan
     if state_path().is_symlink():
         raise RuntimeError("Refusing unsafe setup state file.")
     previous = read_state(allow_incomplete=True) if state_path().exists() else None
+    collect_components(args, previous, interactive)
     saved_gateway = previous.get("external_gateway") if previous else None
     saved_direct = previous and previous.get("mode") == "direct"
     additions = getattr(args, "access", []) or []
     composing = bool(additions)
     repair_selection = bool(previous and (args.mode is None and not args.local or composing))
-    if repair_selection:
-        args.with_omnigent = args.with_omnigent or previous.get("omnigent", False)
-        args.with_search = args.with_search or "local_web_search" in previous["modules"]
-        if "browser-worker" not in previous["modules"]:
-            args.without_browser = True
     if args.mode is None and not args.local:
         args.mode = previous.get("mode", "direct") if previous else "direct"
     if args.local:
@@ -273,8 +322,6 @@ def setup(args):
     if previous and args.omlx == "install" and previous.get("omlx") == "install":
         args.reuse_omlx = bool(previous.get("omlx_version") and "omlx" in previous.get("services", {}))
         args.resume_omlx_package = bool(previous.get("omlx_version") and previous.get("omlx_phase") == "installed")
-    if composing and previous:
-        args.with_omnigent = args.with_omnigent or previous.get("omnigent", False)
     if not local and (args.omlx or args.omlx_url):
         raise RuntimeError("oMLX options require --mode local/both or --local.")
     if local and args.omlx is None:
@@ -326,6 +373,9 @@ def setup(args):
     if remote and env.get("PI_SHARED_BOOTSTRAP_LAUNCHERS") == "0":
         raise RuntimeError("Existing gateway setup requires CLI bootstrap; remove PI_SHARED_BOOTSTRAP_LAUNCHERS=0.")
     code_root = Path(env.get("PI_SETUP_CODE_ROOT", str(Path.home() / ".local/share/pi-shared/modules"))).expanduser().resolve()
+    args.search_selection, args.search_secrets = search_setup.collect(
+        args, previous, env, code_root, interactive, choose)
+    args.with_search = args.search_selection["kind"] == "local"
     flags = ["--minimal"]
     modules = ["pi-shared"]
     if args.mode not in {"later", "existing-gateway", "direct"}:
@@ -367,8 +417,12 @@ def setup(args):
         print(f"  Private HTTP explicitly allowed: {gateway['allow_private_http']}")
         print("  Authenticated catalog read: GET /v1/models/canonical; no inference requests.")
         print("  No local gateway or oMLX service installed; no remote service operations or credential provisioning.")
-    if args.with_search:
-        print("  Search requires a pre-provisioned owner-only Brave API key; see the search module README.")
+    search_setup.describe(args.search_selection)
+    overrides = [name for name in ("PI_WEBSEARCH_MCP_URL", "SEARCH_MCP_URL", "WEBSEARCH_MCP_URL",
+                                   "PI_WEBSEARCH_MCP_API_KEY", "SEARCH_MCP_API_KEY") if env.get(name)]
+    if overrides and args.search_selection["kind"] != "skip":
+        print("  Search environment overrides remain active: " + ", ".join(overrides) +
+              ". Review/remove conflicting overrides in the shell that launches Pi; values are not shown.")
     if args.plan:
         guidance(args, code_root)
         return 0
@@ -411,6 +465,7 @@ def apply_setup(args, code_root, modules, flags, env, gateway=None):
              "omnigent": args.with_omnigent}
     if gateway:
         state["external_gateway"] = gateway
+    state["search"] = args.search_selection
     env = {**env, "PI_SETUP_CODE_ROOT": str(code_root), "PI_SHARED_AGENT_DIR": agent_dir}
     env.setdefault("PI_SHARED_BOOTSTRAP_LAUNCHERS", "1")
     env.setdefault("PI_SHARED_CLI_OUT", str(Path.home() / ".pi/launcher.json"))
@@ -442,7 +497,10 @@ def apply_setup(args, code_root, modules, flags, env, gateway=None):
         cli_path = Path(state["cli_file"])
         env["PI_SHARED_ALIASES"] = str(cli_path.with_name(cli_path.stem + ".gateway-aliases.json"))
     try:
+        search_setup.apply(args.search_selection, args.search_secrets, env)
+        args.search_secrets.clear()
         run([ROOT / "install.sh", *flags], env=env)
+        search_setup.configure(args.search_selection)
     except (Exception, KeyboardInterrupt):
         # Keep retryable ownership for services the trusted component installers
         # actually created before failure. Never record successful completion.
@@ -542,6 +600,10 @@ def read_state(allow_incomplete=False):
                        for k, v in data.get("revisions", {}).items())):
             raise RuntimeError("Invalid update selection/revisions")
     model_access.validate(data)
+    if "search" in data:
+        search_setup.validate_saved(data["search"])
+        if data["search"]["kind"] == "local" and "local_web_search" not in data["modules"]:
+            raise RuntimeError("Local search requires the selected search module")
     if data.get("mode") == "direct":
         if (data["version"] != 2 or data.get("settings", {}).get("PI_SHARED_DIRECT_ONLY") != "1"
                 or data.get("bootstrap_launchers") is not True or not safe_path(data.get("cli_file"))
@@ -590,6 +652,9 @@ def status(require_omnigent=False):
         print("External gateway configuration checked OFFLINE; remote reachability, authentication and inference NOT tested.")
     if data.get("mode") == "direct":
         print("Direct-only configuration checked OFFLINE; native provider authentication and inference NOT tested.")
+    if data.get("search"):
+        search_setup.describe(data["search"])
+        print("Search routing shown from saved setup; external MCP reachability/authentication and provider queries NOT tested.")
     if data.get("omlx"):
         print("oMLX is separately managed; status does not test its service or model inference.")
     return 0
@@ -632,6 +697,8 @@ def update(args):
         raise RuntimeError("Initial setup is incomplete; finish setup before updating")
     print("Update plan: retain saved modules, paths, models and preferences.")
     print("  Selected: " + ", ".join(data["modules"]))
+    if data.get("search"):
+        search_setup.describe(data["search"])
     if data.get("mode") == "direct":
         print("  Preserve direct-only policy and native Pi authentication/model settings; no gateway catalog/profile or oMLX.")
     if data.get("external_gateway"):
@@ -724,6 +791,8 @@ def update(args):
         if data.get("omnigent", False):
             command.append("--with-omnigent")
         run(command, env=env)
+        if data.get("search"):
+            search_setup.configure(data["search"])
         if data.get("mode") == "direct":
             direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
         if data.get("external_gateway"):
@@ -740,7 +809,7 @@ def update(args):
 
 def main():
     parser = argparse.ArgumentParser(description="pi-shared — install and configure a Pi environment via pi-setup.")
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.15")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.16")
     commands = parser.add_subparsers(dest="command", required=True)
     p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
     p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")
@@ -748,7 +817,7 @@ def main():
     p.add_argument("--archive-config", action="store_true", help="Also detach gateway model entries/catalog links; preserve other providers and gateway source configuration")
     p = commands.add_parser("setup", help="Explicitly install/configure modules and start their services")
     p.add_argument("--mode", choices=["direct", "cloud", "local", "both", "later", "existing-gateway"],
-                   help="Legacy topology shortcut; default: saved selection, or direct for a fresh install")
+                   help="Topology shortcut; terminal setup prompts, noninteractive defaults to saved selection or direct")
     p.add_argument("--with", dest="access", action="append", choices=model_access.CHOICES, default=[],
                    help="Add model access without discarding saved choices; repeat for combinations. omlx also selects model-gateway.")
     p.add_argument("--gateway-url", help="Existing remote gateway base URL (HTTPS preferred; optional /v1)")
@@ -759,9 +828,18 @@ def main():
     p.add_argument("--omlx", choices=["existing", "install", "guide"], help="Default: prompt, or guide in non-interactive mode")
     p.add_argument("--omlx-url", type=loopback_url, help="Explicit numeric loopback OpenAI URL for existing oMLX")
     p.add_argument("--recovery", choices=["skip", "guide"], help="Independent pi-fallback prototype; no automatic installation")
-    p.add_argument("--without-browser", action="store_true", help="Do not select browser-worker/Chromium")
-    p.add_argument("--with-search", action="store_true", help="Select search (pre-provision Brave key per module README first)")
-    p.add_argument("--with-omnigent", action="store_true", help="Require native-Pi prerequisites; no Omnigent install, session launch, or inference")
+    browser = p.add_mutually_exclusive_group()
+    browser.add_argument("--without-browser", action="store_true", default=None, help="Do not select browser-worker/Chromium")
+    browser.add_argument("--with-browser", dest="without_browser", action="store_false", help="Select browser-worker and Chromium")
+    p.add_argument("--search", choices=["local", "existing", "skip"], help="Install local Brave search, connect to a compatible MCP server, or leave search unchanged")
+    p.add_argument("--with-search", action="store_true", help="Compatibility alias for local search")
+    p.add_argument("--search-url", help="Existing search MCP HTTP(S) endpoint; must expose web_search and web_fetch")
+    p.add_argument("--search-key-file", help="Private 0600 broker bearer-token file (not a Brave key)")
+    p.add_argument("--brave-key-file", help="Private 0600 Brave API key file to provision local search")
+    p.add_argument("--search-port", type=int, help="Local search loopback port (default 8889 or saved port)")
+    omnigent = p.add_mutually_exclusive_group()
+    omnigent.add_argument("--with-omnigent", action="store_true", default=None, help="Require native-Pi prerequisites; no Omnigent install, session launch, or inference")
+    omnigent.add_argument("--without-omnigent", dest="with_omnigent", action="store_false", help="Skip optional Omnigent checks")
     p.add_argument("--update", action="store_true", help="Explicitly fetch/update selected writable module checkouts")
     p.add_argument("--yes", action="store_true", help="Apply explicit choices without prompting; never download LLM weights")
     p.add_argument("--plan", action="store_true", help="Show plan without commands, downloads, network or file changes")

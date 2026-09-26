@@ -25,7 +25,7 @@ versions without `brew trust`, omit that first command.
 ```bash
 brew trust --formula georgetheo99/tap/pi-shared
 brew install georgetheo99/tap/pi-shared
-pi-shared setup                         # direct by default; saved selection on rerun
+pi-shared setup                         # interactive choices; preserve saved selections
 pi-shared setup --with model-gateway --plan # direct + gateway; read-only preview
 pi-shared setup --mode cloud --plan     # read-only preview; no downloads or commands
 pi-shared setup --local                 # opt into oMLX options, now or later
@@ -67,6 +67,27 @@ weights during package installation. `setup` explicitly delegates to the same
 module installers used below. The new CLI defaults writable module checkouts to
 `~/.local/share/pi-shared/modules`; `PI_SETUP_CODE_ROOT` overrides this. The legacy
 `./install.sh` keeps its existing `~/local_code` default.
+
+## Interactive questionnaire (0.1.16+)
+
+In a terminal, `pi-shared setup` asks for unspecified model access, browser
+installation, optional Omnigent checks, recovery guidance, and search. It then
+shows the complete plan for approval. Explicit flags skip their corresponding
+questions. Saved selections can be retained; model access can be added without
+removing existing services. Declining the plan, EOF, or cancellation before
+approval writes no keys or configuration and starts no services.
+
+Search choices are **local Brave broker**, **existing compatible MCP endpoint**,
+or **skip provisioning**. Local setup explains how to obtain a Brave API key and
+accepts hidden input or a private key file; no pre-cloning is needed. Existing
+search collects a URL and optional bearer authentication. Keys are never printed
+in the plan, put in command arguments, or stored in the setup receipt.
+
+`--plan` remains noninteractive, read-only, and makes no credential reads or
+network requests. `--yes` uses explicit/saved settings without prompting; fresh
+noninteractive defaults remain direct providers, browser enabled, search skipped.
+Native provider login and gateway provider onboarding remain separate steps,
+not credential or inference checks claimed by this questionnaire.
 
 ## Modules
 
@@ -114,12 +135,13 @@ inference; see its README and `docs/provider-onboarding.md`.
 
 ### Composable model access (0.1.15+)
 
-Direct native providers are the fresh setup default. With the matching shared
-module, repeat `--with` to add access without discarding saved selections:
+Direct native providers are the fresh noninteractive setup default and the
+recommended interactive choice. With the matching shared module, repeat `--with`
+to add access without discarding saved selections:
 
 | Access | Setup command |
 |---|---|
-| Direct (default) | `pi-shared setup` |
+| Direct | `pi-shared setup --mode direct` |
 | Direct + local gateway | `pi-shared setup --with model-gateway` |
 | Direct + remote gateway | `pi-shared setup --with existing-gateway --gateway-url https://gateway.example --gateway-key-file /absolute/private.key` |
 | Direct + local gateway + oMLX | `pi-shared setup --with omlx --omlx install` |
@@ -148,8 +170,9 @@ pi-shared setup --mode direct --without-browser --plan
 # Review, then run without --plan (or use --yes for explicit noninteractive approval).
 ```
 
-Direct mode selects shared resources plus browser-worker by default; use
-`--without-browser` to omit browsing. It does not install model-gateway/oMLX,
+Direct mode selects shared resources; terminal setup asks about browser-worker.
+Noninteractive setup includes browser-worker by default; use `--without-browser`
+to omit browsing. It does not install model-gateway/oMLX,
 read a gateway catalog, or generate a gateway profile/model file. Native Pi
 retains authentication and model settings: use `/login`, `/model`, or
 `pi --provider <provider> --model <model-id>`. The only bundled native shortcut
@@ -220,11 +243,36 @@ Normal installations do not require or invoke Omnigent. See the
 [compatibility contract and isolated smoke test](docs/omnigent-compatibility.md)
 for the supported scope, limitations, and evidence required before publication.
 
-### Add search (credential first)
+### Add search
 
-The search installer starts its service and requires an owner-only Brave key
-**before** installation. Pre-clone it, create the ignored credential file using
-its README instructions, then enable it in pi-setup:
+The questionnaire in package 0.1.16+ collects local credentials
+before approval and provisions them privately before the search installer starts:
+
+```bash
+pi-shared setup                         # choose local / existing / skip
+pi-shared setup --search local --brave-key-file /absolute/private/brave.key --plan
+pi-shared setup --search existing --search-url https://search.example/mcp \
+  --search-key-file /absolute/private/broker.key --plan
+```
+
+Replace `--plan` with `--yes` after review. `--search-port` selects the local
+loopback port. Fresh local search uses `~/.local/share/pi-shared/search` for
+private service data, not a pre-created module checkout. Existing local settings
+and credentials are preserved. `--with-search` remains a compatibility alias.
+`--search skip` leaves existing routing and services alone; it does not disable
+tools or uninstall a previously selected service.
+
+Existing MCP servers must implement `web_search(query, num_results)` and
+`web_fetch(url, max_chars)`. Setup saves routing in `~/.pi/research/config.json`,
+preserving browser/unrelated fields; token values stay in private `0600` files.
+Bearer authentication requires HTTPS or loopback HTTP. Interactive reruns can
+change the endpoint, replace the key reference, or remove authentication. A new
+hidden token uses a fresh private file when needed; old credentials are retained,
+not overwritten. Setup does not contact external search servers or issue billable provider queries; configuration is not
+proof of readiness. Environment endpoint/token overrides still take precedence.
+
+For the legacy `install.sh` path or older packages, provision an owner-only Brave
+key **before** installation. Pre-clone the module and follow its README:
 
 ```bash
 git clone https://github.com/GeorgeTheo99/local_web_search.git ~/local_code/local_web_search

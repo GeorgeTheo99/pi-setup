@@ -298,11 +298,11 @@ def test_missing_prerequisite_stops_before_receipt(isolated, monkeypatch):
 def test_interactive_cancel_and_eof_do_not_mutate(isolated, monkeypatch):
     monkeypatch.setattr(sys.stdin, "isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _: "n")
-    assert cli.setup(options(yes=False)) == 0
+    assert cli.setup(options(yes=False, search="skip")) == 0
     assert not cli.state_path().exists() and not isolated[1]
     monkeypatch.setattr("builtins.input", lambda _: (_ for _ in ()).throw(EOFError()))
     with pytest.raises(EOFError):
-        cli.setup(options(yes=False))
+        cli.setup(options(yes=False, search="skip"))
     assert not cli.state_path().exists()
 
 

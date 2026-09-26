@@ -56,7 +56,7 @@ modules:
       (FastMCP + Brave Search). Powers pi-shared's web_search / web_fetch /
       deep_research tools. Requires a personal Brave Search API key.
     post_install_note: >-
-      BEFORE installing: pre-clone this module and create its owner-only
-      data/brave_key (mode 0600, data directory 0700), or use its documented
-      custom data directory. See the module README; the installer starts
-      the service and fails if its required credential is absent or unsafe.
+      pi-shared setup (0.1.16+) collects a Brave key or private key-file path
+      and provisions it before starting this installer. For direct install.sh
+      use, pre-provision data/brave_key (0600, parent 0700), or use the documented
+      custom data directory. The installer fails if the key is absent or unsafe.

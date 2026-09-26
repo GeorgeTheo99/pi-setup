@@ -50,8 +50,11 @@ def test_add_to_direct_and_repeat_preserves_composition(direct, monkeypatch, ext
 
 
 def test_add_direct_to_gateway_preserves_services_and_custom_source(isolated, monkeypatch):
-    _, calls = isolated
-    cli.setup(options(mode="cloud", without_browser=False, with_search=True))
+    home, calls = isolated
+    key = home / "brave-key"
+    key.write_text("synthetic-brave-key\n")
+    key.chmod(0o600)
+    cli.setup(options(mode="cloud", without_browser=False, with_search=True, brave_key_file=str(key)))
     original = cli.read_state()
     monkeypatch.setattr(cli.update_support, "service_environment", lambda _: {"MODEL_GATEWAY_CONFIG": "/saved/custom.yaml"})
     cli.setup(options(mode=None, access=["direct"]))
@@ -84,10 +87,14 @@ def test_corrupt_composition_rejected(direct, change):
 
 
 def test_plain_repair_keeps_all_saved_modules_and_omnigent(isolated, monkeypatch):
-    cli.setup(options(mode="cloud", without_browser=False, with_search=True, with_omnigent=True))
+    key = isolated[0] / "brave-key"
+    key.write_text("synthetic-brave-key\n")
+    key.chmod(0o600)
+    cli.setup(options(mode="cloud", without_browser=False, with_search=True, with_omnigent=True,
+                      brave_key_file=str(key)))
     before = cli.read_state()
     monkeypatch.setattr(cli.update_support, "service_environment", lambda _: {})
-    cli.setup(options(mode=None, without_browser=False))
+    cli.setup(options(mode=None, without_browser=None, with_omnigent=None))
     after = cli.read_state()
     assert set(after["modules"]) == set(before["modules"])
     assert after["omnigent"] is True
@@ -96,7 +103,7 @@ def test_plain_repair_keeps_all_saved_modules_and_omnigent(isolated, monkeypatch
 def test_plain_repair_does_not_add_deselected_browser(isolated, monkeypatch):
     cli.setup(options(mode="cloud", without_browser=True))
     monkeypatch.setattr(cli.update_support, "service_environment", lambda _: {})
-    cli.setup(options(mode=None, without_browser=False))
+    cli.setup(options(mode=None, without_browser=None))
     assert cli.read_state()["modules"] == ["pi-shared", "model-gateway"]
 
 
