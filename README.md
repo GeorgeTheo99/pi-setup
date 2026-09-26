@@ -71,7 +71,7 @@ module installers used below. The new CLI defaults writable module checkouts to
 `~/.local/share/pi-shared/modules`; `PI_SETUP_CODE_ROOT` overrides this. The legacy
 `./install.sh` keeps its existing `~/local_code` default.
 
-## Setup from help
+## Setup from help (0.1.19+)
 
 `pi-shared -h` is the capability overview: native providers, remote gateways
 (including Tailscale), a local gateway/oMLX, browser automation, search, and

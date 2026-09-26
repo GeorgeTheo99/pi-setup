@@ -872,7 +872,7 @@ Provider login, gateway onboarding and model downloads are separate steps.
 After setup: pi (use /login and /model); pi models lists configured routes.
 Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.18")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.19")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
     p = commands.add_parser(
         "setup", help="Explicitly install/configure modules and start their services",
