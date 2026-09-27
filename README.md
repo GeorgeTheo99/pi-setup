@@ -71,13 +71,17 @@ module installers used below. The new CLI defaults writable module checkouts to
 `~/.local/share/pi-shared/modules`; `PI_SETUP_CODE_ROOT` overrides this. The legacy
 `./install.sh` keeps its existing `~/local_code` default.
 
-## Optional native macOS control
+## Optional native macOS control (0.1.23+ routes)
 
-`pi-shared peekaboo {plan,status,apply,check}` separately configures an opt-in,
-full-catalog Peekaboo MCP server. Start with `pi-shared peekaboo plan --json`;
-applying requires explicit approval and that plan's ID. This is not a setup
-module or service, does not grant OS permissions, and never claims desktop
-readiness. Read [Peekaboo setup and compatibility warnings](docs/peekaboo.md)
+`pi-shared peekaboo {plan,status,apply,check}` separately configures an opt-in
+Peekaboo MCP server: full-catalog `--mode direct`, or desktop-app permission owner
+`--mode bridge --bridge-socket /absolute/path` with only browser tools temporarily
+disabled. Omitted mode preserves an exact existing route, otherwise defaults to
+direct; conflicting entries are never migrated. Start with
+`pi-shared peekaboo plan --json`; applying requires explicit approval and that
+plan's ID. JSON schema 2 includes route, socket and permission-source evidence.
+This is not a setup module or service, does not install/launch the app or grant
+OS permissions, and never equates socket presence with app/desktop readiness. Read [Peekaboo setup and compatibility warnings](docs/peekaboo.md)
 before selecting a binary or explicitly installing the older 4.5.0 CLI pin.
 
 ## In-Pi capability setup

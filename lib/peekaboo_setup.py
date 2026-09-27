@@ -33,8 +33,10 @@ MAX_ARCHIVE = 150 * 1024 * 1024
 MAX_EXPANDED = 300 * 1024 * 1024
 RATE = 25_000_000  # 200 Mbps, one download at a time under the shared lock.
 WARNING = ("Compatibility pin 4.5.0 lacks newer input-safety fixes (including modifier cleanup). "
-           "4.6.0 has a known CLI startup failure; no automatic upgrade/downgrade or app-Bridge is used.")
-HOST_WARNING = ("Permission evidence belongs to this setup process, not the later Pi host. "
+           "4.6.0 has a known CLI startup failure; no automatic upgrade/downgrade is used.")
+HOST_WARNING = ("Direct permission evidence belongs to this setup process, not the later Pi host; "
+                "Bridge evidence must identify the Bridge source. App availability is unverified: "
+                "socket presence does not prove an app is installed or listening. "
                 "MCP and desktop readiness are not tested; no permissions are requested or granted.")
 
 
@@ -43,9 +45,11 @@ class SetupError(RuntimeError):
 
 
 def result(action):
-    return {"schemaVersion": 1, "component": "peekaboo", "action": action, "ok": False,
+    return {"schemaVersion": 2, "component": "peekaboo", "action": action, "ok": False,
             "summary": "Peekaboo operation not completed.", "actions": [], "warnings": [WARNING, HOST_WARNING],
             "errors": [], "nextSteps": [], "evidence": {
+                "mode": "direct", "bridgeSocketPath": None,
+                "bridgeSocketState": "not-applicable", "permissionSource": None,
                 "binaryPath": None, "binaryPresent": False, "configuration": "missing",
                 "runnable": "not-tested", "permissions": {"screenRecording": "unknown",
                     "accessibility": "unknown", "eventSynthesizing": "unknown"},
@@ -153,9 +157,77 @@ def parse_json(raw):
         raise SetupError("Invalid JSON; no configuration was changed.") from None
 
 
-def entry(binary):
-    return {"command": str(binary), "args": ["mcp", "--no-remote", "--allow-foreground"],
-            "lifecycle": "lazy-keep-alive", "requestTimeoutMs": 30000, "directTools": False}
+def entry(binary, mode="direct", bridge_socket=None):
+    route = ["--bridge-socket", str(bridge_socket)] if mode == "bridge" else ["--no-remote"]
+    value = {"command": str(binary), "args": ["mcp", *route, "--allow-foreground"],
+             "lifecycle": "lazy-keep-alive", "requestTimeoutMs": 30000, "directTools": False}
+    if mode == "bridge":
+        value["env"] = {"PEEKABOO_DISABLE_TOOLS": "browser"}
+    return value
+
+
+def socket_snapshot(path, report):
+    """Inspect only filesystem metadata; never connect to or open the socket."""
+    report["evidence"]["bridgeSocketState"] = "invalid"
+    try:
+        with directory(path.parent) as fd:
+            info = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
+    except FileNotFoundError:
+        report["evidence"]["bridgeSocketState"] = "missing"
+        guidance = "Start the separately installed Peekaboo desktop app yourself with its Bridge enabled at the selected socket, then recheck. Setup never installs or launches the app."
+        if guidance not in report["nextSteps"]:
+            report["nextSteps"].append(guidance)
+        return None
+    if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or
+            info.st_nlink != 1 or info.st_mode & 0o022):
+        raise SetupError("Bridge socket has unsafe type, ownership, links, or permissions.")
+    report["evidence"]["bridgeSocketState"] = "present"
+    return stamp(info)
+
+
+def select_route(args, existing, report):
+    """Recognize only exact owned shapes; never migrate or normalize an entry."""
+    mode, socket = args.mode, None
+    if args.bridge_socket is not None:
+        if mode == "direct":
+            raise SetupError("--bridge-socket requires Bridge mode; direct mode cannot use a socket.")
+        socket = path_value(args.bridge_socket)
+    existing_mode, existing_socket = None, None
+    if existing is not None:
+        if (not isinstance(existing, dict) or not isinstance(existing.get("command"), str) or
+                type(existing.get("directTools")) is not bool or
+                type(existing.get("requestTimeoutMs")) is not int):
+            raise SetupError("Existing Peekaboo entry conflicts with the exact direct/Bridge policy.")
+        if existing == entry(existing["command"]):
+            existing_mode = "direct"
+        else:
+            argv = existing.get("args")
+            if isinstance(argv, list) and len(argv) == 4 and isinstance(argv[2], str):
+                existing_socket = path_value(argv[2])
+                if existing == entry(existing["command"], "bridge", existing_socket):
+                    existing_mode = "bridge"
+            if existing_mode is None:
+                raise SetupError("Existing Peekaboo entry conflicts with the exact direct/Bridge policy.")
+    mode = mode or existing_mode or "direct"
+    report["evidence"]["mode"] = mode
+    report["evidence"]["bridgeSocketState"] = "invalid" if mode == "bridge" else "not-applicable"
+    if mode == "direct" and socket is not None:
+        raise SetupError("--bridge-socket requires Bridge mode; direct mode cannot use a socket.")
+    if existing_mode and mode != existing_mode:
+        raise SetupError("Selected mode conflicts with the existing Peekaboo entry; no automatic migration is allowed.")
+    if mode == "bridge":
+        if socket is not None and existing_socket is not None and socket != existing_socket:
+            raise SetupError("Selected Bridge socket conflicts with the existing Peekaboo entry.")
+        socket = socket or existing_socket
+        report["evidence"]["bridgeSocketState"] = "invalid"
+        if socket is None:
+            raise SetupError("Bridge mode requires --bridge-socket with a normalized absolute path.")
+        report["evidence"]["bridgeSocketPath"] = str(socket)
+        socket_stamp = socket_snapshot(socket, report)
+    else:
+        report["evidence"]["bridgeSocketState"] = "not-applicable"
+        socket_stamp = None
+    return mode, socket, socket_stamp
 
 
 def managed():
@@ -179,6 +251,9 @@ def discover():
 
 
 def inspect(args, report):
+    report["evidence"]["mode"] = args.mode or "direct"
+    if args.mode == "bridge":
+        report["evidence"]["bridgeSocketState"] = "invalid"
     config = path_value(args.config or str(Path.home() / ".config/mcp/mcp.json"))
     report["evidence"]["configuration"] = "invalid"
     raw, config_stamp = read_file(config, MAX_CONFIG)
@@ -193,14 +268,10 @@ def inspect(args, report):
                 isinstance(server, dict) and isinstance(server.get("command"), str) and
                 Path(server["command"]).name == "peekaboo"):
             raise SetupError("Another Peekaboo entry already exists; resolve it manually.")
-    if "peekaboo" in servers:
-        if (not isinstance(existing, dict) or not isinstance(existing.get("command"), str) or
-                existing != entry(existing["command"]) or type(existing.get("directTools")) is not bool or
-                type(existing.get("requestTimeoutMs")) is not int):
-            raise SetupError("Existing Peekaboo entry conflicts with the full-catalog direct CLI policy.")
-        configured = path_value(existing["command"])
-    else:
-        configured = None
+    if "peekaboo" in servers and existing is None:
+        raise SetupError("Existing Peekaboo entry conflicts with the exact direct/Bridge policy.")
+    mode, socket, socket_stamp = select_route(args, existing, report)
+    configured = path_value(existing["command"]) if existing is not None else None
     binary = path_value(args.binary) if args.binary else configured or discover()
     if existing is not None and binary != configured:
         raise SetupError("Selected binary conflicts with the existing Peekaboo entry.")
@@ -232,20 +303,26 @@ def inspect(args, report):
     elif not binary_stamp:
         report["nextSteps"].append("Select an existing signed CLI with --binary, or review a new plan with --install.")
     if binary and report["evidence"]["configuration"] == "missing":
-        report["actions"].append("Add the full-catalog Peekaboo direct stdio entry; preserve other MCP settings.")
+        report["actions"].append("Add the Peekaboo Bridge stdio entry with only browser tools disabled; preserve other MCP settings."
+                                 if mode == "bridge" else
+                                 "Add the full-catalog Peekaboo direct stdio entry; preserve other MCP settings.")
     if binary:
         report["actions"].append("On apply: verify Developer ID and exact CLI version before writing configuration.")
     selection = {"config": str(config), "configStamp": config_stamp, "binary": str(binary) if binary else None,
                  "binaryStamp": binary_stamp, "runtimeStamp": runtime_stamp,
                  "install": args.install, "version": VERSION, "sha256": SHA256,
-                 "entry": entry(binary) if binary else None, "schemaVersion": 1}
+                 "mode": mode, "bridgeSocketPath": str(socket) if socket else None,
+                 "bridgeSocketStamp": socket_stamp,
+                 "entry": entry(binary, mode, socket) if binary else None, "schemaVersion": 2}
     report["planId"] = hashlib.sha256(json.dumps(selection, sort_keys=True).encode()).hexdigest()
     return config, document, selection
 
 
-def run_bounded(command, timeout=15, label="Read-only probe"):
+def run_bounded(command, timeout=15, label="Read-only probe", *, native_only=False):
     """Bound combined child output and runtime; no shell, inherited secrets, or DYLD overrides."""
     env = {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}
+    if native_only:
+        env["PEEKABOO_DISABLE_TOOLS"] = "browser"
     process = subprocess.Popen([str(x) for x in command], stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                                cwd="/", start_new_session=True)
@@ -323,13 +400,17 @@ def startup(binary, report):
 
 
 def permissions(binary, report):
-    code, out, _ = run_bounded([binary, "permissions", "status", "--no-remote", "--json"])
+    bridge = report["evidence"]["mode"] == "bridge"
+    route = ["--bridge-socket", report["evidence"]["bridgeSocketPath"]] if bridge else ["--no-remote"]
+    command = [binary, "permissions", "status", *route, "--json"]
+    code, out, _ = run_bounded(command, native_only=True) if bridge else run_bounded(command)
     data = parse_json(out)
     if not isinstance(data, dict) or data.get("success") is not True or not isinstance(data.get("data"), dict):
         raise SetupError("Permission probe did not return a successful structured snapshot.")
     snapshot = data["data"]
-    if snapshot.get("source") != "local" or not isinstance(snapshot.get("permissions"), list):
-        raise SetupError("Permission probe did not report the local CLI host.")
+    source = "bridge" if bridge else "local"
+    if snapshot.get("source") != source or not isinstance(snapshot.get("permissions"), list):
+        raise SetupError("Permission probe did not report the selected permission source.")
     names = {"Screen Recording": "screenRecording", "Accessibility": "accessibility",
              "Event Synthesizing": "eventSynthesizing"}
     found = {}
@@ -341,14 +422,17 @@ def permissions(binary, report):
             if name in found or type(item.get("isGranted")) is not bool:
                 raise SetupError("Invalid permission snapshot.")
             found[name] = "granted" if item["isGranted"] else "denied"
-    report["evidence"]["permissions"].update(found)
     if code or len(found) != 3:
         raise SetupError("Permission probe failed or returned an incomplete snapshot.")
+    report["evidence"]["permissions"].update(found)
+    report["evidence"]["permissionSource"] = source
     if "denied" in found.values():
         report["nextSteps"].extend([
+            "Open System Settings > Privacy & Security > Accessibility and Screen & System Audio Recording; approve the selected Peekaboo desktop app (Bridge permission owner)."
+            if bridge else
             "Open System Settings > Privacy & Security > Accessibility and Screen & System Audio Recording; approve the actual CLI/responsible host shown by macOS, not an unrelated Peekaboo.app.",
-            "If macOS requests a restart, start a fresh terminal/Pi session yourself, then recheck through Pi's MCP adapter. Setup-process grants can differ; do not restart other sessions automatically."])
-        raise SetupError("One or more permissions are denied for this setup process; no permission request was made.")
+            "If macOS requests a restart, restart the selected permission host yourself, then recheck through Pi's MCP adapter. Direct setup-process grants can differ; do not restart other sessions automatically."])
+        raise SetupError("One or more permissions are denied for the selected host; no permission request was made.")
 
 
 class OfficialRedirect(urllib.request.HTTPRedirectHandler):
@@ -455,7 +539,7 @@ def install(report):
 
 
 def write_config(config, document, selection):
-    document.setdefault("mcpServers", {})["peekaboo"] = entry(selection["binary"])
+    document.setdefault("mcpServers", {})["peekaboo"] = selection["entry"]
     payload = (json.dumps(document, indent=2, ensure_ascii=True, allow_nan=False) + "\n").encode()
     if len(payload) > MAX_CONFIG:
         raise SetupError("Merged configuration exceeds the size limit; no configuration was changed.")
@@ -492,8 +576,11 @@ def refresh_after_failure(args, report):
             "install": False, "binary": report["evidence"]["binaryPath"] or args.binary})), current)
     except (RuntimeError, OSError, ValueError):
         pass
-    for key in ("binaryPath", "binaryPresent", "configuration"):
+    for key in ("binaryPath", "binaryPresent", "configuration", "mode", "bridgeSocketPath", "bridgeSocketState"):
         report["evidence"][key] = current["evidence"][key]
+    for step in current["nextSteps"]:
+        if step not in report["nextSteps"]:
+            report["nextSteps"].append(step)
 
 
 def operate(args, lock):
@@ -523,6 +610,8 @@ def operate(args, lock):
                 if not args.install and (verified != selection["binaryStamp"] or
                         read_file(binary.parent / "libswiftCompatibilitySpan.dylib", MAX_EXPANDED, executable=True)[1] != selection["runtimeStamp"]):
                     raise SetupError("Binary/runtime changed after planning; no configuration was written.")
+                if selection["mode"] == "bridge" and socket_snapshot(Path(selection["bridgeSocketPath"]), report) != selection["bridgeSocketStamp"]:
+                    raise SetupError("Bridge socket changed after planning; create a fresh plan.")
                 if read_file(config, MAX_CONFIG)[1] != selection["configStamp"]:
                     raise SetupError("Configuration changed after planning; no configuration was overwritten.")
                 if report["evidence"]["configuration"] != "matching":
@@ -537,11 +626,15 @@ def operate(args, lock):
                 raise SetupError("--install is only supported by plan/apply; check never installs.")
             if not report["evidence"]["binaryPresent"]:
                 raise SetupError("Peekaboo executable is missing; no probe was run.")
+            if selection["mode"] == "bridge" and report["evidence"]["bridgeSocketState"] != "present":
+                raise SetupError("Bridge socket is missing; start the desktop app yourself before checking.")
             startup(Path(selection["binary"]), report)
+            if selection["mode"] == "bridge" and socket_snapshot(Path(selection["bridgeSocketPath"]), report) != selection["bridgeSocketStamp"]:
+                raise SetupError("Bridge socket changed during validation; recheck before probing permissions.")
             permissions(Path(selection["binary"]), report)
             if report["evidence"]["configuration"] != "matching":
                 raise SetupError("CLI probes passed but Peekaboo configuration is missing.")
-            report["summary"] = "CLI and setup-process permissions checked; MCP and desktop remain not tested."
+            report["summary"] = "CLI and selected-host permissions checked; MCP and desktop remain not tested."
         report["ok"] = True
         return report, 0
     except KeyboardInterrupt:
@@ -566,14 +659,16 @@ def main(argv, lock):
             raise SetupError("Invalid Peekaboo arguments; use pi-shared peekaboo --help.")
 
     parser = Parser(prog="pi-shared peekaboo", description="Standalone Peekaboo CLI configuration (not a setup module).",
-                    epilog="Plans/status are offline. Apply needs --yes and a matching plan ID. No TCC requests, services, app Bridge, provider setup or desktop actions.")
+                    epilog="Plans/status are offline. Apply needs --yes and a matching plan ID. No TCC requests, services, app installation/launch, provider setup or desktop actions.")
     parser.add_argument("action", choices=["plan", "status", "apply", "check"])
-    parser.add_argument("--json", action="store_true", help="Emit only the schema-v1 JSON result on stdout")
+    parser.add_argument("--json", action="store_true", help="Emit only the schema-v2 JSON result on stdout")
     parser.add_argument("--config", metavar="ABS", help="MCP JSON path (default ~/.config/mcp/mcp.json)")
     parser.add_argument("--binary", metavar="ABS", help="Existing signed executable; never search PATH")
+    parser.add_argument("--mode", choices=["direct", "bridge"], help="Preserve an exact existing route when omitted; otherwise default direct")
+    parser.add_argument("--bridge-socket", metavar="ABS", help="Bridge socket path; required for a new Bridge entry, never auto-discovered")
     parser.add_argument("--install", action="store_true", help="Explicit missing-binary-only 4.5.0 Apple Silicon installation")
     parser.add_argument("--yes", action="store_true", help="Approve apply; no interactive confirmation")
-    parser.add_argument("--expected-plan", metavar="SHA256", help="Plan ID from plan with identical binary/config/install choices")
+    parser.add_argument("--expected-plan", metavar="SHA256", help="Plan ID from plan with identical binary/config/install/mode/socket choices")
     try:
         args = parser.parse_args(argv)
         if args.action != "apply" and (args.yes or args.expected_plan):

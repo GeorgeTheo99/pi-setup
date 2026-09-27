@@ -16,11 +16,38 @@ pi-shared peekaboo apply --binary /absolute/path/to/peekaboo \
 pi-shared peekaboo check --json
 ```
 
+To select the desktop app's Bridge as the permission owner:
+
+```sh
+pi-shared peekaboo plan --mode bridge --bridge-socket /absolute/path/to/bridge.sock \
+  --binary /absolute/path/to/peekaboo --json
+pi-shared peekaboo apply --mode bridge --bridge-socket /absolute/path/to/bridge.sock \
+  --binary /absolute/path/to/peekaboo --yes --expected-plan <planId> --json
+pi-shared peekaboo check --json
+```
+
 All actions accept `--config /absolute/path/to/mcp.json`; the default is
-`~/.config/mcp/mcp.json`. Repeat the **same binary/config/install choices** from
-`plan` in `apply`. A changed config, executable or adjacent runtime library
-invalidates approval. There are no interactive prompts. `--yes` alone is not enough.
+`~/.config/mcp/mcp.json`. Repeat the **same binary/config/install/mode/socket choices**
+from `plan` in `apply`. A changed config, executable, adjacent runtime library or
+Bridge socket metadata invalidates approval. Socket selection and route are also
+part of the approval digest. There are no interactive prompts. `--yes` alone is not enough.
 Help never inspects configuration or starts anything.
+
+`--mode direct|bridge` selects the route. When omitted, an **exactly recognized**
+existing direct or Bridge entry is preserved; without an existing entry, the default
+is direct. A new Bridge selection requires an explicit normalized absolute
+`--bridge-socket`; an existing matching Bridge entry supplies its saved socket.
+A socket alone does not select Bridge for a new entry. Direct mode plus a socket
+is rejected. Existing conflicting entries are never overwritten, normalized or
+migrated automatically—even when a different mode is explicitly requested.
+
+Socket inspection is filesystem metadata only: no connect, app discovery or
+listener probe. Socket paths reject symlinks, unsafe ancestors, non-socket types,
+foreign ownership, hardlinks and shared-write access. A missing socket can be
+planned/configured, but `check` fails with manual start-app guidance. A present
+socket **does not prove the app is installed or listening**; app availability
+remains unverified. Install/start the desktop app and enable its Bridge yourself;
+this backend never downloads, installs or launches it.
 
 `plan` and `status` only inspect local files, without subprocesses, network,
 locks, or writes. They can succeed with a missing installation: `ok` means the
@@ -46,9 +73,10 @@ pi-shared peekaboo apply --install --yes --expected-plan <planId> --json
 
 **Compatibility/security warning:** the pin is official CLI **4.5.0**, which
 lacks newer input-safety fixes, including modifier cleanup. CLI 4.6.0 has a known
-Swift startup defect; the 4.5.0 app-Bridge route has a separate startup defect.
-This integration uses direct stdio only. Successful startup is not evidence of
-safe complex keyboard/foreground workflows. Reassess a fixed official release
+Swift startup defect. The 4.5.0 full-catalog Bridge route has also exhibited a
+startup defect; Bridge mode therefore temporarily disables **only `browser` tools**
+with `PEEKABOO_DISABLE_TOOLS=browser`. Direct mode retains the full catalog.
+Successful startup is not evidence of safe complex keyboard/foreground workflows. Reassess a fixed official release
 before expanding reliance on desktop automation.
 
 The first implementation supports automatic install on **Apple Silicon macOS
@@ -79,7 +107,7 @@ version directory. Inspect it before retrying—no automatic destructive cleanup
 
 ## Configuration and ownership
 
-The exact full-catalog entry is:
+The exact direct, full-catalog entry is:
 
 ```json
 {
@@ -95,8 +123,27 @@ The exact full-catalog entry is:
 }
 ```
 
-No include/exclude filters or approval lists are installed. Foreground support is
-explicit; this is not a semantic authorization boundary or desktop lock. Optional
+The exact native-only Bridge entry differs only in `args` and its fixed `env`:
+
+```json
+{
+  "mcpServers": {
+    "peekaboo": {
+      "command": "/absolute/path/to/peekaboo",
+      "args": ["mcp", "--bridge-socket", "/absolute/path/to/bridge.sock", "--allow-foreground"],
+      "env": {"PEEKABOO_DISABLE_TOOLS": "browser"},
+      "lifecycle": "lazy-keep-alive",
+      "requestTimeoutMs": 30000,
+      "directTools": false
+    }
+  }
+}
+```
+
+No adapter include/exclude filters or approval lists are installed. Bridge's
+browser-only exclusion is fixed, not a generic environment passthrough; any other
+`env` or entry shape conflicts. Foreground support is explicit; this is not a
+semantic authorization boundary or desktop lock. Optional
 agent/analysis tools may need their own provider setup; no credentials are copied
 or configured. Do not operate the same desktop concurrently from multiple sessions.
 
@@ -129,16 +176,23 @@ injection variables:
 
 1. Developer ID signature/identifier verification using `/usr/bin/codesign`.
 2. The selected executable's `--version`, requiring exactly 4.5.0.
-3. `permissions status --no-remote --json`, accepting only a structured local-host
-   snapshot for Screen Recording, Accessibility and Event Synthesizing.
+3. Direct: `permissions status --no-remote --json`, requiring `data.source: "local"`.
+   Bridge: `permissions status --bridge-socket ABS --json`, requiring
+   `data.source: "bridge"`, with the fixed `PEEKABOO_DISABLE_TOOLS=browser` environment
+   addition. Both require a successful structured snapshot for Screen Recording,
+   Accessibility and Event Synthesizing. A wrong/missing source or incomplete
+   snapshot is rejected rather than reported as granted evidence.
 
 It never requests permissions, resets TCC, starts a service/app Bridge, captures a
 screen, lists apps/windows, dispatches an action, or calls a model provider. A
 denied/unknown permission produces nonzero exit. This strict check includes Event
 Synthesizing even though some background accessibility actions do not require it.
-Granted permissions describe **this setup process's responsible host**, not a later
-Pi adapter process. MCP initialize/listTools and adapter-mediated permissions are
-**not implemented in this version**. No tool count is invented or treated as readiness.
+Granted direct permissions describe **this setup process's responsible host**, not
+a later Pi adapter process. Bridge permissions describe the selected desktop app's
+Bridge permission owner, not local CLI grants. Denial guidance names the selected
+owner; permissions and required restarts remain manual. MCP initialize/listTools
+and adapter-mediated permissions are **not implemented by this backend**. No tool
+count (including a native-only count) is invented or treated as readiness.
 
 After applying, restart Pi or `/reload` and discover the server through its MCP
 adapter. Verify permissions again from that actual host. These steps do not imply
@@ -152,7 +206,7 @@ argument failures 2, and cancellation 130. Every result has:
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "component": "peekaboo",
   "action": "plan",
   "ok": true,
@@ -163,6 +217,10 @@ argument failures 2, and cancellation 130. Every result has:
   "nextSteps": [],
   "planId": "<64 lowercase hex characters; only when inspection succeeded>",
   "evidence": {
+    "mode": "direct",
+    "bridgeSocketPath": null,
+    "bridgeSocketState": "not-applicable",
+    "permissionSource": null,
     "binaryPath": null,
     "binaryPresent": false,
     "configuration": "missing",
@@ -179,10 +237,19 @@ argument failures 2, and cancellation 130. Every result has:
 }
 ```
 
+All result objects, including operational/argument failures and cancellation,
+use schema 2 and retain all prior evidence fields. `mode` is `direct` or `bridge`;
+`bridgeSocketPath` is the selected absolute path or null; `bridgeSocketState` is
+`not-applicable`, `missing`, `present` or `invalid`. `permissionSource` is null
+until a valid complete permissions probe, then `local` or `bridge` (including a
+valid snapshot with denied permissions). Unparsed argument failures retain the
+default unknown-evidence values shown above; invalid action names use
+`action: "unknown"`.
+
 Other configuration values: `matching`, `conflict`, `invalid`. Runnable values:
 `yes`, `no`, `not-tested`; permission values: `unknown`, `granted`, `denied`.
 `mcp` remains `not-tested`, `toolCount` remains null, and `desktop` always remains
-`not-tested` in v1. Unknown/invalid action arguments use `action: "unknown"`.
+`not-tested` in schema 2. Socket evidence is not MCP or desktop readiness.
 
 Implementation references for the pinned upstream JSON/version shape:
 [PermissionHelpers.swift](https://github.com/openclaw/Peekaboo/blob/v4.5.0/Apps/CLI/Sources/PeekabooCLI/Helpers/PermissionHelpers.swift),

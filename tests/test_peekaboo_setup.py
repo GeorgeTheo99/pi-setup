@@ -6,7 +6,10 @@ import io
 import json
 import os
 from pathlib import Path
+import socket
+import stat
 import subprocess
+import tempfile
 import sys
 import tarfile
 from types import SimpleNamespace
@@ -40,7 +43,8 @@ def binary(home):
 
 def args(action="plan", **kwargs):
     return SimpleNamespace(**({"action": action, "config": None, "binary": None,
-                              "install": False, "yes": False, "expected_plan": None} | kwargs))
+                              "install": False, "yes": False, "expected_plan": None,
+                              "mode": None, "bridge_socket": None} | kwargs))
 
 
 @contextmanager
@@ -70,15 +74,19 @@ def approve(**kwargs):
 def probes(monkeypatch):
     calls = []
 
-    def run(command, timeout=15):
+    def run(command, timeout=15, *, native_only=False):
         calls.append([str(x) for x in command])
         if command[0] == "/usr/bin/codesign":
             assert command[command.index("-R") + 1].startswith("=anchor apple generic"), "codesign needs '=' for an inline requirement, otherwise it opens a file"
             return 0, b"", b""
         if command[-1] == "--version":
             return 0, b"Peekaboo 4.5.0 (main/abc, built: fixture)\n", b""
-        assert command[1:] == ["permissions", "status", "--no-remote", "--json"]
-        return 0, permission_output(), b""
+        if native_only:
+            assert command[1:4] == ["permissions", "status", "--bridge-socket"]
+            assert command[-1] == "--json" and len(command) == 6
+        else:
+            assert command[1:] == ["permissions", "status", "--no-remote", "--json"]
+        return 0, permission_output(source="bridge" if native_only else "local"), b""
 
     monkeypatch.setattr(p, "run_bounded", run)
     return calls
@@ -86,8 +94,19 @@ def probes(monkeypatch):
 
 def permission_output(granted=True, source="local", **extra):
     return json.dumps({"success": True, "data": {"source": source, "permissions": [
-        {"name": name, "isGranted": granted, "grantInstructions": "secret must not be printed"}
+        {"name": name, "isRequired": True, "isGranted": granted, "grantInstructions": "secret must not be printed"}
         for name in ["Screen Recording", "Accessibility", "Event Synthesizing"]]}, **extra}).encode()
+
+
+@pytest.fixture
+def bridge_socket():
+    # Short private path also fits macOS's sockaddr_un; not a real app socket.
+    with tempfile.TemporaryDirectory(prefix="pb-", dir=str(Path("/tmp").resolve())) as temp:
+        path = Path(temp) / "bridge.sock"
+        with socket.socket(socket.AF_UNIX) as server:
+            server.bind(str(path))
+            path.chmod(0o600)
+        yield path  # Deliberately not listening: presence is not readiness.
 
 
 def test_contract_offline_missing(home, monkeypatch):
@@ -100,10 +119,12 @@ def test_contract_offline_missing(home, monkeypatch):
     for action in ["plan", "status"]:
         report, code = p.operate(args(action), forbidden)
         assert code == 0 and report["ok"]
-        assert report["schemaVersion"] == 1 and report["component"] == "peekaboo"
+        assert report["schemaVersion"] == 2 and report["component"] == "peekaboo"
         assert report["action"] == action
         assert len(report["planId"]) == 64
         assert report["evidence"] == {
+            "mode": "direct", "bridgeSocketPath": None,
+            "bridgeSocketState": "not-applicable", "permissionSource": None,
             "binaryPath": None, "binaryPresent": False, "configuration": "missing",
             "runnable": "not-tested", "permissions": {"screenRecording": "unknown",
                 "accessibility": "unknown", "eventSynthesizing": "unknown"},
@@ -177,7 +198,7 @@ def test_overflowing_unrelated_number_cannot_be_rewritten(home, binary, probes, 
 def test_config_serializer_refuses_nonfinite_values(home, binary):
     config = home / "new.json"
     with pytest.raises(ValueError):
-        p.write_config(config, {"unrelated": float("inf")}, {"binary": str(binary), "configStamp": None})
+        p.write_config(config, {"unrelated": float("inf")}, {"entry": p.entry(binary), "configStamp": None})
     assert not config.exists()
 
 
@@ -312,7 +333,8 @@ def test_changed_at_final_write_no_clobber(home, binary, probes, monkeypatch):
 
 
 @pytest.mark.parametrize("failure", ["signature", "crash", "4.6", "timeout", "cancel"])
-def test_failed_startup_never_wires(home, binary, monkeypatch, failure):
+@pytest.mark.parametrize("mode", ["direct", "bridge"])
+def test_failed_startup_never_wires(home, binary, monkeypatch, failure, mode, bridge_socket):
     def run(command, timeout=15):
         if command[0] == "/usr/bin/codesign":
             return (1 if failure == "signature" else 0), b"", b"secret"
@@ -323,7 +345,10 @@ def test_failed_startup_never_wires(home, binary, monkeypatch, failure):
         return (1 if failure == "crash" else 0), b"Peekaboo 4.6.0", b"secret crash dump"
 
     monkeypatch.setattr(p, "run_bounded", run)
-    report, code = approve(binary=str(binary))
+    options = {"mode": mode}
+    if mode == "bridge":
+        options["bridge_socket"] = str(bridge_socket)
+    report, code = approve(binary=str(binary), **options)
     assert code and not report["ok"]
     assert "secret" not in json.dumps(report)
     assert not (home / ".config/mcp/mcp.json").exists()
@@ -337,6 +362,7 @@ def test_check_success_is_not_desktop_or_mcp_readiness(home, binary, probes):
     report, code = operate("check")
     assert code == 0, report
     assert set(report["evidence"]["permissions"].values()) == {"granted"}
+    assert report["evidence"]["permissionSource"] == "local"
     assert report["evidence"]["mcp"] == report["evidence"]["desktop"] == "not-tested"
     assert report["evidence"]["toolCount"] is None
     assert "secret" not in json.dumps(report)
@@ -553,26 +579,46 @@ def test_subprocess_timeout_and_output_bound(home, monkeypatch):
         p.run_bounded([sys.executable, "-c", "print('x'*10000)"])
 
 
-def test_probe_environment_does_not_inherit_secrets(home, monkeypatch):
+@pytest.mark.parametrize("native_only", [False, True])
+def test_probe_environment_does_not_inherit_secrets(home, monkeypatch, native_only):
     monkeypatch.setenv("PRIVATE_KEY", "secret")
     monkeypatch.setenv("DYLD_LIBRARY_PATH", "secret")
-    code, out, _ = p.run_bounded([sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"])
+    monkeypatch.setenv("PEEKABOO_DISABLE_TOOLS", "all")
+    original = p.subprocess.Popen
+    captured = []
+
+    def spawn(*args, **kwargs):
+        captured.append(kwargs["env"])
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(p.subprocess, "Popen", spawn)
+    code, out, _ = p.run_bounded([sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"], native_only=native_only)
     assert code == 0 and b"secret" not in out and b"DYLD" not in out
+    expected = {"HOME": str(home), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}
+    if native_only:
+        expected["PEEKABOO_DISABLE_TOOLS"] = "browser"
+    assert captured == [expected]
 
 
 @pytest.mark.parametrize("argv", [["plan", "--unexpected", "secret", "--json"],
-    ["apply", "--json"], ["check", "--install", "--json"], ["plan", "--yes", "--json"]])
+    ["apply", "--json"], ["check", "--install", "--json"], ["plan", "--yes", "--json"],
+    ["plan", "--mode", "secret", "--json"], ["plan", "--mode", "bridge", "--json"],
+    ["plan", "--bridge-socket", "--json"],
+    ["plan", "--mode", "direct", "--bridge-socket", "/missing.sock", "--json"]])
 def test_structured_nonzero_and_no_argument_leak(home, capsys, argv):
     assert p.main(argv, lock) != 0
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert not data["ok"] and data["errors"]
+    assert data["schemaVersion"] == 2
+    assert {"mode", "bridgeSocketPath", "bridgeSocketState", "permissionSource"} <= data["evidence"].keys()
     assert "secret" not in captured.out and captured.err == ""
 
 
 @pytest.mark.parametrize("action", ["plan", "status"])
-def test_offline_plan_audit_forbids_execution_network_and_writes(home, binary, action):
-    write_config(home, {"mcpServers": {"peekaboo": p.entry(binary)}})
+@pytest.mark.parametrize("mode", ["direct", "bridge"])
+def test_offline_plan_audit_forbids_execution_network_and_writes(home, binary, action, mode, bridge_socket):
+    write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, mode, bridge_socket)}})
     launcher = '''
 import os, runpy, sys
 home = os.environ["HOME"] + os.sep
@@ -604,9 +650,343 @@ def test_cli_help_and_json_in_empty_home(home, argv):
     if "--json" in argv:
         data = json.loads(run.stdout)
         assert data["ok"] == (run.returncode == 0)
+        assert data["schemaVersion"] == 2
     else:
         assert run.returncode == 0 and "--expected-plan" in run.stdout
+        assert "--mode" in run.stdout and "--bridge-socket" in run.stdout
     assert run.stderr == "" and list(home.iterdir()) == []
+
+
+@pytest.mark.parametrize("mode", ["direct", "bridge"])
+def test_exact_route_preserved_and_idempotent(home, binary, probes, mode, bridge_socket):
+    server = p.entry(binary, mode, bridge_socket)
+    config = write_config(home, {"settings": {"secret": "kept"}, "mcpServers": {"peekaboo": server}})
+    before = config.read_bytes(), config.stat()
+    for options in ({}, {"mode": mode}):
+        report, code = approve(**options)
+        assert code == 0, report
+        evidence = report["evidence"]
+        assert evidence["mode"] == mode
+        assert evidence["bridgeSocketPath"] == (str(bridge_socket) if mode == "bridge" else None)
+        assert evidence["bridgeSocketState"] == ("present" if mode == "bridge" else "not-applicable")
+        assert evidence["permissionSource"] is None
+        assert config.read_bytes() == before[0]
+        assert config.stat().st_ino == before[1].st_ino
+        assert config.stat().st_mtime_ns == before[1].st_mtime_ns
+        assert "secret" not in json.dumps(report)
+    assert all("permissions" not in call and "mcp" not in call for call in probes)
+
+
+def test_new_bridge_entry_is_native_only(home, binary, probes, bridge_socket):
+    original = {"other": {"url": "https://example.invalid", "env": {"TOKEN": "secret"}}}
+    config = write_config(home, {"mcpServers": original, "setting": True})
+    report, code = approve(binary=str(binary), mode="bridge", bridge_socket=str(bridge_socket))
+    assert code == 0, report
+    expected = {"command": str(binary), "args": ["mcp", "--bridge-socket", str(bridge_socket), "--allow-foreground"],
+                "env": {"PEEKABOO_DISABLE_TOOLS": "browser"}, "lifecycle": "lazy-keep-alive",
+                "requestTimeoutMs": 30000, "directTools": False}
+    assert json.loads(config.read_text()) == {"mcpServers": original | {"peekaboo": expected}, "setting": True}
+    assert "secret" not in json.dumps(report)
+    assert report["evidence"]["toolCount"] is None
+    assert any("browser tools disabled" in action for action in report["actions"])
+
+
+@pytest.mark.parametrize("mode", [None, "direct"])
+def test_absent_entry_defaults_direct(home, binary, mode):
+    report, code = operate(binary=str(binary), mode=mode)
+    assert code == 0 and report["evidence"]["mode"] == "direct"
+    assert report["evidence"]["bridgeSocketPath"] is None
+    assert report["evidence"]["bridgeSocketState"] == "not-applicable"
+
+
+@pytest.mark.parametrize("options", [
+    {"mode": "bridge"}, {"mode": "direct", "bridge_socket": "/missing.sock"},
+    {"bridge_socket": "/missing.sock"}, {"mode": "bridge", "bridge_socket": "relative"},
+    {"mode": "bridge", "bridge_socket": "~/bridge.sock"},
+    {"mode": "bridge", "bridge_socket": "/a/../bridge.sock"},
+    {"mode": "bridge", "bridge_socket": "/a//bridge.sock"},
+    {"mode": "bridge", "bridge_socket": "/a/\nbridge.sock"},
+    {"mode": "bridge", "bridge_socket": "/a/bridge.sock/"}])
+def test_route_requires_explicit_safe_selection(home, binary, probes, options):
+    report, code = operate(binary=str(binary), **options)
+    assert code and not report["ok"] and not probes
+    assert not (home / ".config").exists()
+    evidence = report["evidence"]
+    assert evidence["bridgeSocketPath"] is None
+    assert evidence["bridgeSocketState"] == ("invalid" if evidence["mode"] == "bridge" else "not-applicable")
+
+
+@pytest.mark.parametrize("existing_mode,selected_mode", [("direct", "bridge"), ("bridge", "direct")])
+def test_no_automatic_route_migration(home, binary, probes, bridge_socket, existing_mode, selected_mode):
+    config = write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, existing_mode, bridge_socket)}})
+    before = config.read_bytes()
+    options = {"mode": selected_mode}
+    if selected_mode == "bridge":
+        options["bridge_socket"] = str(bridge_socket)
+    report, code = operate(**options)
+    assert code and report["evidence"]["configuration"] == "conflict"
+    assert config.read_bytes() == before and not probes
+
+
+@pytest.mark.parametrize("change", [
+    {"env": {}}, {"env": {"PEEKABOO_DISABLE_TOOLS": "browser,agent"}},
+    {"env": {"PEEKABOO_DISABLE_TOOLS": "browser", "TOKEN": "secret"}},
+    {"includeTools": []}, {"excludeTools": ["browser"]}, {"approveTools": []},
+    {"requestTimeoutMs": 30000.0}, {"directTools": 0}, {"lifecycle": "eager"},
+    {"args": ["mcp", "--bridge-socket", "relative", "--allow-foreground"]}])
+def test_bridge_conflicting_shape_not_adopted(home, binary, bridge_socket, change):
+    config = write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, "bridge", bridge_socket) | change}})
+    before = config.read_bytes()
+    report, code = operate()
+    assert code and report["evidence"]["configuration"] == "conflict"
+    assert config.read_bytes() == before and "secret" not in json.dumps(report)
+
+
+def test_bridge_socket_override_conflict(home, binary, bridge_socket):
+    config = write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, "bridge", bridge_socket)}})
+    before = config.read_bytes()
+    report, code = operate(bridge_socket=str(home / "another.sock"))
+    assert code and report["evidence"]["configuration"] == "conflict"
+    assert report["evidence"]["mode"] == "bridge"
+    assert report["evidence"]["bridgeSocketState"] == "invalid"
+    assert config.read_bytes() == before
+    report, code = operate(bridge_socket=str(bridge_socket))
+    assert code == 0 and report["evidence"]["mode"] == "bridge"
+
+
+@pytest.mark.parametrize("parent_missing", [False, True])
+def test_missing_socket_can_be_planned_and_wired_but_not_checked(home, binary, probes, parent_missing):
+    path = home / "missing" / "bridge.sock" if parent_missing else home / "bridge.sock"
+    options = {"mode": "bridge", "bridge_socket": str(path), "binary": str(binary)}
+    report, code = approve(**options)
+    assert code == 0, report
+    assert report["evidence"]["bridgeSocketState"] == "missing"
+    assert report["evidence"]["permissionSource"] is None
+    assert any("Start the separately installed" in step for step in report["nextSteps"])
+    assert not path.exists()
+    before = list(probes)
+    report, code = operate("check")
+    assert code and probes == before  # Not even a startup probe when Bridge is missing.
+    assert report["evidence"]["runnable"] == "not-tested"
+    assert any("start the desktop app" in error for error in report["errors"])
+
+
+@pytest.mark.parametrize("kind", ["file", "directory", "fifo", "symlink", "dangling", "hardlink", "writable", "parent-link", "parent-writable"])
+def test_unsafe_socket_rejected_offline(home, binary, bridge_socket, probes, kind):
+    target = home / "unsafe.sock"
+    if kind == "file":
+        target.write_text("not a socket")
+    elif kind == "directory":
+        target.mkdir()
+    elif kind == "fifo":
+        os.mkfifo(target)
+    elif kind in {"symlink", "dangling"}:
+        target.symlink_to(bridge_socket if kind == "symlink" else home / "absent")
+    elif kind == "hardlink":
+        os.link(bridge_socket, target)
+    elif kind == "writable":
+        target = bridge_socket
+        target.chmod(0o666)
+    elif kind == "parent-link":
+        target.symlink_to(bridge_socket.parent, target_is_directory=True)
+        target = target / bridge_socket.name
+    else:
+        target.mkdir(mode=0o777)
+        target.chmod(0o777)
+        target = target / "absent.sock"
+    report, code = operate(binary=str(binary), mode="bridge", bridge_socket=str(target))
+    assert code and not probes
+    assert report["evidence"]["bridgeSocketState"] == "invalid"
+    assert report["evidence"]["permissionSource"] is None
+
+
+def test_foreign_owned_socket_rejected(home, bridge_socket, monkeypatch):
+    original = p.os.stat
+
+    def foreign(*args, **kwargs):
+        info = original(*args, **kwargs)
+        if stat.S_ISSOCK(info.st_mode):
+            return SimpleNamespace(st_mode=info.st_mode, st_uid=os.getuid() + 1, st_nlink=1)
+        return info
+
+    monkeypatch.setattr(p.os, "stat", foreign)
+    report, code = operate(mode="bridge", bridge_socket=str(bridge_socket))
+    assert code and report["evidence"]["bridgeSocketState"] == "invalid"
+
+
+def test_route_and_socket_participate_in_approval(home, binary, probes):
+    direct, _ = operate(binary=str(binary))
+    options = {"binary": str(binary), "mode": "bridge", "bridge_socket": str(home / "one.sock")}
+    bridge, _ = operate(**options)
+    other, _ = operate(**(options | {"bridge_socket": str(home / "two.sock")}))
+    assert len({direct["planId"], bridge["planId"], other["planId"]}) == 3
+    for approved in (direct, other):
+        report, code = operate("apply", yes=True, expected_plan=approved["planId"], **options)
+        assert code and not probes
+    assert not (home / ".config").exists()
+
+
+@pytest.mark.parametrize("timing", ["before-apply", "lock", "startup"])
+def test_socket_races_invalidate_approval(home, binary, probes, bridge_socket, monkeypatch, timing):
+    options = {"binary": str(binary), "mode": "bridge", "bridge_socket": str(bridge_socket)}
+    plan, code = operate(**options)
+    assert code == 0
+    original_startup = p.startup
+
+    def startup(binary, report):
+        verified = original_startup(binary, report)
+        bridge_socket.unlink()
+        return verified
+
+    @contextmanager
+    def racing_lock():
+        bridge_socket.unlink()
+        yield
+
+    if timing == "before-apply":
+        bridge_socket.unlink()
+    if timing == "startup":
+        monkeypatch.setattr(p, "startup", startup)
+    report, code = p.operate(args("apply", yes=True, expected_plan=plan["planId"], **options),
+                             racing_lock if timing == "lock" else lock)
+    assert code and not (home / ".config/mcp/mcp.json").exists()
+    assert report["evidence"]["bridgeSocketState"] == "missing"
+    assert any("Start the separately installed" in step for step in report["nextSteps"])
+    if timing != "startup":
+        assert not probes
+
+
+@pytest.mark.parametrize("timing", ["before-apply", "lock", "startup", "final-write"])
+def test_bridge_config_races_preserve_concurrent_editor(home, binary, probes, bridge_socket, monkeypatch, timing):
+    config = write_config(home, {"setting": True})
+    options = {"binary": str(binary), "mode": "bridge", "bridge_socket": str(bridge_socket)}
+    plan, _ = operate(**options)
+    changed = b'{"concurrent":true}'
+    original_startup, original_write = p.startup, p.write_config
+
+    @contextmanager
+    def racing_lock():
+        config.write_bytes(changed)
+        yield
+
+    def startup(binary, report):
+        verified = original_startup(binary, report)
+        config.write_bytes(changed)
+        return verified
+
+    def write(config, document, selection):
+        config.write_bytes(changed)
+        original_write(config, document, selection)
+
+    if timing == "before-apply":
+        config.write_bytes(changed)
+    elif timing == "startup":
+        monkeypatch.setattr(p, "startup", startup)
+    elif timing == "final-write":
+        monkeypatch.setattr(p, "write_config", write)
+    report, code = p.operate(args("apply", yes=True, expected_plan=plan["planId"], **options),
+                             racing_lock if timing == "lock" else lock)
+    assert code and config.read_bytes() == changed
+    assert not list(config.parent.glob(".peekaboo-*"))
+
+
+@pytest.mark.parametrize("action", ["plan", "status"])
+def test_cli_bridge_selection_and_missing_socket_guidance(home, binary, action):
+    path = home / "absent.sock"
+    run = subprocess.run([sys.executable, "-B", str(ROOT / "bin/pi-shared"), "peekaboo", action,
+                          "--binary", str(binary), "--mode", "bridge", "--bridge-socket", str(path), "--json"],
+                         env={"HOME": str(home), "PATH": os.environ["PATH"]},
+                         capture_output=True, text=True, timeout=15)
+    assert run.returncode == 0 and run.stderr == ""
+    report = json.loads(run.stdout)
+    assert report["schemaVersion"] == 2
+    assert report["evidence"]["mode"] == "bridge"
+    assert report["evidence"]["bridgeSocketPath"] == str(path)
+    assert report["evidence"]["bridgeSocketState"] == "missing"
+    assert report["evidence"]["permissionSource"] is None
+    assert report["nextSteps"] and list(home.iterdir()) == [binary]
+
+
+def test_bridge_socket_changed_during_check_blocks_permission_probe(home, binary, probes, bridge_socket, monkeypatch):
+    write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, "bridge", bridge_socket)}})
+    original = p.startup
+
+    def startup(binary, report):
+        original(binary, report)
+        bridge_socket.unlink()
+
+    monkeypatch.setattr(p, "startup", startup)
+    report, code = operate("check")
+    assert code and report["evidence"]["bridgeSocketState"] == "missing"
+    assert report["evidence"]["permissionSource"] is None
+    assert all("permissions" not in call for call in probes)
+
+
+def test_bridge_check_routes_exactly_without_readiness_claims(home, binary, probes, bridge_socket):
+    write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, "bridge", bridge_socket)}})
+    report, code = operate("check")
+    assert code == 0, report
+    evidence = report["evidence"]
+    assert evidence["mode"] == evidence["permissionSource"] == "bridge"
+    assert evidence["bridgeSocketState"] == "present"
+    assert set(evidence["permissions"].values()) == {"granted"}
+    assert evidence["toolCount"] is None
+    assert evidence["mcp"] == evidence["desktop"] == "not-tested"
+    assert probes[-1] == [str(binary), "permissions", "status", "--bridge-socket", str(bridge_socket), "--json"]
+    assert all("mcp" not in call and "request" not in call for call in probes)
+    assert any("App availability is unverified" in warning for warning in report["warnings"])
+
+
+@pytest.mark.parametrize("failure", ["local", "missing-source", "denied", "incomplete", "duplicate", "bad-boolean", "nonzero", "crash", "timeout", "cancel"])
+def test_bridge_permission_failures_do_not_claim_ready(home, binary, probes, bridge_socket, monkeypatch, failure):
+    write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, "bridge", bridge_socket)}})
+    original = p.run_bounded
+
+    def run(command, timeout=15, *, native_only=False):
+        if command[-1] != "--json":
+            return original(command, timeout)
+        assert native_only is True
+        if failure == "timeout":
+            raise p.SetupError("Read-only probe timed out; no readiness is implied.")
+        if failure == "cancel":
+            raise KeyboardInterrupt
+        if failure == "crash":
+            return -6, b"secret crash", b"secret"
+        output = json.loads(permission_output(granted=failure != "denied", source="bridge"))
+        if failure == "local":
+            output["data"]["source"] = "local"
+        elif failure == "missing-source":
+            del output["data"]["source"]
+        elif failure == "incomplete":
+            output["data"]["permissions"].pop()
+        elif failure == "duplicate":
+            output["data"]["permissions"].append(output["data"]["permissions"][0])
+        elif failure == "bad-boolean":
+            output["data"]["permissions"][0]["isGranted"] = 1
+        return int(failure == "nonzero"), json.dumps(output).encode(), b"secret"
+
+    monkeypatch.setattr(p, "run_bounded", run)
+    report, code = operate("check")
+    assert code == (130 if failure == "cancel" else 1)
+    evidence = report["evidence"]
+    assert evidence["permissionSource"] == ("bridge" if failure == "denied" else None)
+    assert set(evidence["permissions"].values()) == ({"denied"} if failure == "denied" else {"unknown"})
+    assert evidence["mcp"] == evidence["desktop"] == "not-tested" and evidence["toolCount"] is None
+    assert "secret" not in json.dumps(report)
+    if failure == "denied":
+        assert any("Bridge permission owner" in step for step in report["nextSteps"])
+
+
+def test_bridge_install_retains_official_cli_pin(home, probes, monkeypatch):
+    monkeypatch.setattr(p, "download_bounded", lambda path: path.write_bytes(archive_bytes()))
+    path = home / "absent.sock"
+    report, code = approve(install=True, mode="bridge", bridge_socket=str(path))
+    assert code == 0, report
+    configured = json.loads((home / ".config/mcp/mcp.json").read_text())["mcpServers"]["peekaboo"]
+    assert configured == p.entry(p.managed() / "peekaboo", "bridge", path)
+    assert p.VERSION == "4.5.0" and p.TEAM == "FWJYW4S8P8"
+    assert not list(p.managed().parent.glob(".peekaboo-*"))
+    assert not (home / ".config/pi-shared/setup.json").exists()
 
 
 def test_sigterm_unwinds_probe_process_group(home, binary):
