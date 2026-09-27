@@ -254,7 +254,9 @@ Direct mode selects shared resources and includes browser-worker by default;
 `--guided` offers a browser choice. Use `--without-browser`
 to omit browsing. It does not install model-gateway/oMLX,
 read a gateway catalog, or generate a gateway profile/model file. Native Pi
-retains authentication and model settings: use `/login`, `/model`, or
+retains authentication and model selection; pi-shared fills only missing
+`openai-codex` max-context overrides in native `models.json`, leaving existing
+values and pay-as-you-go API models alone. Use `/login`, `/model`, or
 `pi --provider <provider> --model <model-id>`. The only bundled native shortcut
 is the existing OpenAI preset; `PI_SHARED_DIRECT_LAUNCHERS=0` disables it. Other
 native providers need no new launcher preset. Authentication/inference are not

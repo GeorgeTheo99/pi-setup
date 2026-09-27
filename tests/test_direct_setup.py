@@ -341,8 +341,10 @@ def test_real_shared_direct_setup_rerun_refresh_update_status(isolated, monkeypa
     assert json.loads(config.read_text()) == generated
     assert all(cli.read_state()[k] == before[k] for k in ("code_root", "agent_dir", "cli_file", "settings"))
     assert not (home / ".pi-omlx").exists()
-    for name, content in native.items():
-        assert (agent / name).read_text() == content
+    assert (agent / "auth.json").read_text() == native["auth.json"]
+    models = json.loads((agent / "models.json").read_text())
+    assert set(models["providers"]) == {"openai-codex"}
+    assert {v["contextWindow"] for v in models["providers"]["openai-codex"]["modelOverrides"].values()} == {872000}
     settings = json.loads((agent / "settings.json").read_text())
     assert settings["defaultProvider"] == "test-provider" and settings["defaultModel"] == "keep-native"
     assert catalog.read_text() == "INVALID GATEWAY CATALOG MUST NOT BE READ"
@@ -379,6 +381,9 @@ def test_real_shared_add_gateway_to_direct_preserves_native_state(isolated, monk
         assert result.returncode == 0, result.stdout + result.stderr
     monkeypatch.setattr(cli, "run", run)
     cli.setup(options(mode=None))
+    assert (native / "auth.json").read_bytes() == before["auth.json"]
+    policy_models = (native / "models.json").read_bytes()
+    assert json.loads(policy_models)["providers"]["native"] == {"apiKey": "test-only", "models": []}
     cli.setup(options(mode=None, access=["model-gateway"]))
     receipt = cli.read_state()
     config = Path(receipt["cli_file"])
@@ -388,6 +393,7 @@ def test_real_shared_add_gateway_to_direct_preserves_native_state(isolated, monk
     cli.setup(options(mode=None))
     cli.status()
     assert config.read_bytes() == rendered
-    assert all((native/n).read_bytes() == value for n,value in before.items())
+    assert (native / "auth.json").read_bytes() == before["auth.json"]
+    assert (native / "models.json").read_bytes() == policy_models
     settings = json.loads((native/"settings.json").read_text())
     assert settings["defaultProvider"] == "native" and settings["defaultModel"] == "keep-me"

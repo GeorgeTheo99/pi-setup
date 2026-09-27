@@ -88,7 +88,9 @@ if os.environ["SETUP_MODE"] == "direct":
     config = json.loads((home / ".pi/launcher.json").read_text())
     assert "--direct-only" in config["generation"]["args"], config
     assert not (home / ".pi-omlx").exists(), "direct setup created a gateway profile"
-    assert not (home / ".pi/agent/models.json").exists(), "direct setup took ownership of native models"
+    native = json.loads((home / ".pi/agent/models.json").read_text())
+    assert set(native["providers"]) == {"openai-codex"}, native
+    assert all(v["contextWindow"] == 872000 for v in native["providers"]["openai-codex"]["modelOverrides"].values()), native
     assert not (Path(receipt["code_root"]) / "model-gateway").exists(), "gateway installed in direct mode"
 PY
     # Bare pi update must use the owning setup updater, not stock self-update.

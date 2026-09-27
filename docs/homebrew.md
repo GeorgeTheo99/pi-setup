@@ -308,7 +308,10 @@ choices and explicit `PI_SHARED_DIRECT_LAUNCHERS=0` opt-outs survive reruns.
 For gateway-enabled setup, until the alias export is configured,
 `pi --launcher-list` is empty and no placeholder `models.json` is written. The
 future gateway profile is wired in advance. Direct mode deliberately
-skips that profile/catalog wiring and lists only enabled native shortcuts. Configure the gateway to export the alias catalog to `cli_file`
+skips that profile/catalog wiring and lists only enabled native shortcuts.
+pi-shared may add missing `openai-codex` max-context overrides to the native
+profile's `models.json`; existing overrides, API-provider settings, and auth
+remain untouched. Configure the gateway to export the alias catalog to `cli_file`
 (default `~/.pi/launcher.json`), then run `pi --launcher-refresh`. Direct Pi
 `/login` alone does not create gateway aliases. Missing or invalid input never
 replaces a configured launcher with an empty list.
