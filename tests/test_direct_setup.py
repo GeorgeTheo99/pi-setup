@@ -332,6 +332,14 @@ def test_real_shared_direct_setup_rerun_refresh_update_status(isolated, monkeypa
     generated = json.loads(config.read_text())
     assert generated["generation"]["args"] == ["--direct-only", "--shared-dir", str(shared),
                                                "--direct-launchers" if enabled == "1" else "--no-direct-launchers"]
+    if enabled == "1":
+        result = subprocess.run([str(shared / "bin/pi-launch"), "openai", "--set-context=standard"],
+                                env={**os.environ, "PI_LAUNCHER_CONFIG": str(config),
+                                     "PI_CODING_AGENT_DIR": str(agent)},
+                                capture_output=True, text=True, timeout=30)
+        assert result.returncode == 0, result.stderr
+        selected = json.loads((agent / "models.json").read_text())
+        assert {item["contextWindow"] for item in selected["providers"]["openai-codex"]["modelOverrides"].values()} == {272000}
     for key in overrides:
         monkeypatch.delenv(key)
     cli.setup(options(mode="direct"))
@@ -344,7 +352,8 @@ def test_real_shared_direct_setup_rerun_refresh_update_status(isolated, monkeypa
     assert (agent / "auth.json").read_text() == native["auth.json"]
     models = json.loads((agent / "models.json").read_text())
     assert set(models["providers"]) == {"openai-codex"}
-    assert {v["contextWindow"] for v in models["providers"]["openai-codex"]["modelOverrides"].values()} == {872000}
+    assert {v["contextWindow"] for v in models["providers"]["openai-codex"]["modelOverrides"].values()} == (
+        {272000} if enabled == "1" else {872000})
     settings = json.loads((agent / "settings.json").read_text())
     assert settings["defaultProvider"] == "test-provider" and settings["defaultModel"] == "keep-native"
     assert catalog.read_text() == "INVALID GATEWAY CATALOG MUST NOT BE READ"

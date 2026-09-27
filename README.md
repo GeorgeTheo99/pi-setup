@@ -256,7 +256,9 @@ to omit browsing. It does not install model-gateway/oMLX,
 read a gateway catalog, or generate a gateway profile/model file. Native Pi
 retains authentication and model selection; pi-shared fills only missing
 `openai-codex` max-context overrides in native `models.json`, leaving existing
-values and pay-as-you-go API models alone. Use `/login`, `/model`, or
+values and pay-as-you-go API models alone. `pi openai --set-context=standard|max`
+explicitly saves 272K or 872K for all six reviewed Codex models in the selected
+profile for future sessions; later updates preserve that choice. Use `/login`, `/model`, or
 `pi --provider <provider> --model <model-id>`. The only bundled native shortcut
 is the existing OpenAI preset; `PI_SHARED_DIRECT_LAUNCHERS=0` disables it. Other
 native providers need no new launcher preset. Authentication/inference are not

@@ -311,7 +311,9 @@ future gateway profile is wired in advance. Direct mode deliberately
 skips that profile/catalog wiring and lists only enabled native shortcuts.
 pi-shared may add missing `openai-codex` max-context overrides to the native
 profile's `models.json`; existing overrides, API-provider settings, and auth
-remain untouched. Configure the gateway to export the alias catalog to `cli_file`
+remain untouched. `pi openai --set-context=standard|max` explicitly changes all
+six reviewed Codex contexts in the selected native profile for future sessions;
+updates preserve either saved mode. Configure the gateway to export the alias catalog to `cli_file`
 (default `~/.pi/launcher.json`), then run `pi --launcher-refresh`. Direct Pi
 `/login` alone does not create gateway aliases. Missing or invalid input never
 replaces a configured launcher with an empty list.

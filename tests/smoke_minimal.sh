@@ -93,10 +93,19 @@ if os.environ["SETUP_MODE"] == "direct":
     assert all(v["contextWindow"] == 872000 for v in native["providers"]["openai-codex"]["modelOverrides"].values()), native
     assert not (Path(receipt["code_root"]) / "model-gateway").exists(), "gateway installed in direct mode"
 PY
+    if [ "$SETUP_MODE" = direct ]; then
+      "$stage/setup/bin/pi" openai --set-context=standard
+      python3 -c '\''import json,pathlib; p=pathlib.Path.home()/".pi/agent/models.json"; v=json.loads(p.read_text())["providers"]["openai-codex"]["modelOverrides"]; assert len(v)==6 and all(m["contextWindow"]==272000 for m in v.values())'\''
+    fi
     # Bare pi update must use the owning setup updater, not stock self-update.
     "$stage/setup/bin/pi" update </dev/null
     "$stage/setup/bin/pi-shared" update --modules-only </dev/null
     "$stage/setup/bin/pi-shared" status
+    if [ "$SETUP_MODE" = direct ]; then
+      python3 -c '\''import json,pathlib; p=pathlib.Path.home()/".pi/agent/models.json"; v=json.loads(p.read_text())["providers"]["openai-codex"]["modelOverrides"]; assert len(v)==6 and all(m["contextWindow"]==272000 for m in v.values())'\''
+      "$stage/setup/bin/pi" openai --set-context=max
+      python3 -c '\''import json,pathlib; p=pathlib.Path.home()/".pi/agent/models.json"; v=json.loads(p.read_text())["providers"]["openai-codex"]["modelOverrides"]; assert len(v)==6 and all(m["contextWindow"]==872000 for m in v.values())'\''
+    fi
     # The offline management flags still work after the update-driven refresh.
     PI_LAUNCHER_CONFIG="$HOME/.pi/launcher.json" "$launch" --launcher-check
     "$stage/setup/bin/pi" models
