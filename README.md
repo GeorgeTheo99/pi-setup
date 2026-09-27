@@ -80,6 +80,17 @@ module or service, does not grant OS permissions, and never claims desktop
 readiness. Read [Peekaboo setup and compatibility warnings](docs/peekaboo.md)
 before selecting a binary or explicitly installing the older 4.5.0 CLI pin.
 
+## In-Pi capability setup
+
+`pi-shared capability COMPONENT {plan,apply,check}` backs the expanded `/setup`
+menu in compatible shared modules: search, browser, MCP, development, documents,
+Apple prerequisites, private knowledge, models and diagnostics. Plans are offline;
+checks are explicit. Only missing project configs and new private KB metadata
+layouts can be created after exact-plan approval. Existing files and trust remain
+unchanged. Broader installation, service and indexing operations are displayed
+as terminal handoffs to their existing owners—not silently executed. Peekaboo
+retains its separate contract above. [Capability CLI, options and limits](docs/capabilities.md).
+
 ## Setup from help (0.1.19+)
 
 `pi-shared -h` is the capability overview: native providers, remote gateways
