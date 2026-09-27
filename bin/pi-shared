@@ -890,7 +890,7 @@ Provider login, gateway onboarding and model downloads are separate steps.
 After setup: pi (use /login and /model); pi models lists configured routes.
 Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.25")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.26")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
     commands.add_parser("peekaboo", help="Standalone opt-in native macOS CLI: plan, status, apply, check")
     commands.add_parser("capability", help="Bounded /setup capability plans, missing-only scaffolds and explicit checks")
