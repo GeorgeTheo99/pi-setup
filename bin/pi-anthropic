@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Launch the configured native Anthropic shortcut; never turn it into a prompt."""
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+
+def main():
+    pi = Path(__file__).resolve().with_name("pi")
+    result = subprocess.run([str(pi), "models", "--direct", "--json"],
+                            capture_output=True, text=True, timeout=30)
+    if result.returncode != 0:
+        raise ValueError("direct launcher is unavailable; run pi-shared setup and enable direct launchers")
+    listing = json.loads(result.stdout)
+    routes = listing.get("models") if isinstance(listing, dict) else None
+    if not isinstance(routes, list) or not any(
+            isinstance(row, dict) and row.get("alias") == "anthropic"
+            and row.get("provider") == "anthropic" and row.get("gateway") is False
+            for row in routes):
+        raise ValueError("Anthropic shortcut is disabled; enable direct launchers in pi-shared setup")
+    os.execv(str(pi), [str(pi), "anthropic", *sys.argv[1:]])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        print(f"pi-anthropic: {exc}", file=sys.stderr)
+        sys.exit(1)

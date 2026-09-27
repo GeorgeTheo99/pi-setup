@@ -259,9 +259,13 @@ retains authentication and model selection; pi-shared fills only missing
 values and pay-as-you-go API models alone. `pi openai --set-context=standard|max`
 explicitly saves 272K or 872K for all six reviewed Codex models in the selected
 profile for future sessions; later updates preserve that choice. Use `/login`, `/model`, or
-`pi --provider <provider> --model <model-id>`. The only bundled native shortcut
-is the existing OpenAI preset; `PI_SHARED_DIRECT_LAUNCHERS=0` disables it. Other
-native providers need no new launcher preset. Authentication/inference are not
+`pi --provider <provider> --model <model-id>`. Direct shortcuts include `pi openai`
+and `pi anthropic`; the packaged `pi-anthropic` command checks that the native
+Anthropic shortcut is enabled before launching it. Run `/login anthropic` in Pi
+and select Claude Pro/Max OAuth, or configure an Anthropic API key. **Unlike
+Codex, Claude OAuth third-party usage is billed as extra usage per token**, not
+against plan limits. `PI_SHARED_DIRECT_LAUNCHERS=0` disables both shortcuts;
+`pi-anthropic` fails closed in that case. Authentication/inference are not
 verified by setup or status.
 
 The schema-2 receipt saves `PI_SHARED_DIRECT_ONLY=1`; reruns retain custom paths,
