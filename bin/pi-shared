@@ -852,6 +852,9 @@ def update(args):
 
 
 def main():
+    if sys.argv[1:2] == ["peekaboo"]:
+        import peekaboo_setup
+        return peekaboo_setup.main(sys.argv[2:], update_lock)
     parser = argparse.ArgumentParser(
         description="pi-shared — install and configure a Pi environment via pi-setup.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -886,6 +889,7 @@ Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
     parser.add_argument("--version", action="version", version="pi-shared setup 0.1.20")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
+    commands.add_parser("peekaboo", help="Standalone opt-in native macOS CLI: plan, status, apply, check")
     p = commands.add_parser(
         "setup", help="Explicitly install/configure modules and start their services",
         formatter_class=argparse.RawDescriptionHelpFormatter,
