@@ -42,7 +42,7 @@ Homebrew-owned Pi runtime is not installed by this source command.
 
 ## Runtime promotion policy
 
-The public package ships **one exact Pi runtime**, currently **0.85.1**. The
+The public package ships **one exact Pi runtime**, currently **0.87.1**. The
 setup CLI can advance independently while that runtime stays pinned. There are
 no runtime channels, dynamic npm-version selection, or automatic fallbacks.
 
