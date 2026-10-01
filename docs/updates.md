@@ -24,6 +24,9 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package 0.1.28 keeps Pi 0.87.1 and preserves model-gateway's
+`MODEL_GATEWAY_ADMIN_WRITES` service setting during updates; 0.1.27 refused to
+update gateway LaunchAgents that record it (model-gateway 0.2 and later).
 Package 0.1.27 restores stock Pi **0.87.1** after its complete lockset passed a
 fresh-cache installation through the explicitly approved public npm registry.
 This updates Anthropic OAuth's advertised Claude Code version to 2.1.280; the
