@@ -121,7 +121,7 @@ def test_failed_update_retains_old_applied_revisions_for_retry(saved, monkeypatc
 def test_custom_gateway_paths_recovered_from_current_owned_plist(saved):
     env = {"MODEL_GATEWAY_CONFIG": "/private/config.yaml", "MODEL_GATEWAY_MODEL_INFO": "/private/models.json",
            "MODEL_GATEWAY_LEDGER_PATH": "/private/ledger.db", "MODEL_GATEWAY_PORT": "19111",
-           "MODEL_GATEWAY_BACKUP_DIR": "/private/backups"}
+           "MODEL_GATEWAY_BACKUP_DIR": "/private/backups", "MODEL_GATEWAY_ADMIN_WRITES": "true"}
     service(saved, env=env)
     cli.update(args())
     actual = saved[1][0][1]["env"]
