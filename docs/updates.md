@@ -24,6 +24,12 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package 0.1.29 moves to stock Pi **0.99.1**, the newest release available through
+the Databricks npm proxy, after its complete lockset passed a fresh-cache
+installation from the approved public npm registry. 0.99 adds built-in MCP,
+codemode and `tool_search`. An extension that registers `/mcp`, such as
+`pi-mcp-adapter`, replaces the built-in MCP support; move its servers to
+`~/.pi/agent/mcp.json` and remove the adapter to use the built-in support.
 Package 0.1.28 keeps Pi 0.87.1 and preserves model-gateway's
 `MODEL_GATEWAY_ADMIN_WRITES` service setting during updates; 0.1.27 refused to
 update gateway LaunchAgents that record it (model-gateway 0.2 and later).

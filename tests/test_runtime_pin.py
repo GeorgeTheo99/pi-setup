@@ -9,10 +9,10 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "@earendil-works/pi-coding-agent"
-VERIFIED_PI = "0.87.1"
-# Reacquired from approved public npm with fresh cache on 2026-09-27:
-# macOS arm64, Node 26.10.0, npm 11.19.1; 144 installed, no nonoptional omissions or version mismatches.
-VERIFIED_LOCK_SHA256 = "58713fc3b479b762ebb6503fd2bbb2476571be3e7b47c7359297d0f09d486735"
+VERIFIED_PI = "0.99.1"
+# Reacquired from approved public npm with fresh cache on 2026-10-06:
+# macOS arm64, Node 26.10.0, npm 11.19.1; 147 installed, no omissions or version mismatches.
+VERIFIED_LOCK_SHA256 = "f1be9032888d0ca7e78152036232fbacd990e589257e3a6c0cc7006b521526af"
 
 
 def test_runtime_manifest_pins_one_verified_version():
