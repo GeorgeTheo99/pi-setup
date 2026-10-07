@@ -1,4 +1,4 @@
-"""Bounded /setup capabilities: offline inventory, two missing-only scaffolds, handoffs.
+"""Bounded /setup capabilities: inventory, missing-only scaffolds, native MCP migration.
 
 No project commands, package managers, services or inference are executed here.
 The shared root is an explicitly supplied, trusted distribution (not discovered
@@ -27,7 +27,7 @@ COMPONENTS = ("search", "browser", "mcp", "development", "documents", "apple",
 MAX_FILE = 1024 * 1024
 KB_FILES = ("sources.json", "documents.json", "corpus/source-cards.md")
 MODES = {"search": ("guided", "local", "existing"), "browser": ("public", "app"),
-         "development": ("code-intel", "verification"),
+         "mcp": ("native", "migrate"), "development": ("code-intel", "verification"),
          "knowledge": ("initialize", "ingest"), "models": ("native", "guided", "gateway", "omlx")}
 
 
@@ -75,6 +75,8 @@ def options(component, raw):
         allowed |= {"command", "args", "inputs"}
     if component == "knowledge":
         allowed.add("root")
+    if component == "mcp" and mode == "migrate":
+        allowed.add("sourceConfig")
     if set(data) - allowed:
         raise SetupError("Unknown option or option not supported by the selected mode.")
     if modes:
@@ -91,6 +93,8 @@ def options(component, raw):
                 raise SetupError("Use an HTTP(S) search URL without credentials, query, fragment or controls; bearer authentication requires HTTPS or loopback HTTP.") from None
     if component == "knowledge" and "root" in data:
         absolute(data["root"])
+    if component == "mcp" and "sourceConfig" in data:
+        absolute(data["sourceConfig"])
     if component == "development" and mode == "verification":
         # An empty selection is an inventory/guidance request, never a guessed test.
         fields = {"command", "args", "inputs"} & set(data)
@@ -435,21 +439,8 @@ def inspect(args, report):
             report["warnings"].append("Chromium download is separate explicit consent; no browser is started here. Managed package artifacts are changed only through their owning update workflow.")
         report["warnings"].append("Public browser_fetch/browser_inspect and private app_* have separate runtimes and policies. Presence does not verify authenticated inventory or browser execution.")
     elif c == "mcp":
-        raw, _ = file_state(paths["agent_dir"] / "settings.json")
-        document = parse_json(raw) if raw is not None else {}
-        if not isinstance(document, dict) or not isinstance(document.get("packages", []), list):
-            raise SetupError("Profile settings must be an object with a packages array.")
-        declared = False
-        for package in document.get("packages", []):
-            source = package.get("source") if isinstance(package, dict) else package
-            if isinstance(source, str) and re.fullmatch(r"npm:pi-mcp-adapter(?:@[^\s]+)?", source):
-                declared = True
-        evidence(report, "MCP adapter package declaration", "present; current-session load unknown" if declared else "not declared in the selected profile")
-        report["status"] = "configured-untested" if declared else "not-installed"
-        handoff(report, "Install external adapter in the explicitly selected profile",
-                ["env", "PI_CODING_AGENT_DIR=" + str(paths["agent_dir"]), "pi", "install", "npm:pi-mcp-adapter"])
-        handoff(report, "Configure MCP after loading the adapter in that profile", "/mcp setup", "pi")
-        report["warnings"].append("External Pi packages have full machine permissions. Review the adapter's source before installation. A declaration is not proof the current session loaded it; no MCP credentials are inspected.")
+        import mcp_setup
+        mcp_setup.inspect(paths, opts, report, selection)
     elif c == "documents":
         selection["prerequisites"] = document_inventory(report)
     elif c == "apple":
@@ -509,6 +500,11 @@ def apply(args, report, selection, lock):
             for name in selected["directories"]:
                 with directory(Path(name), create=True):
                     pass
+        if args.component == "mcp":
+            import mcp_setup
+            mcp_setup.apply(selected, args.expected_plan, report)
+            report.pop("planId", None)
+            return
         for name, payload in selected["files"].items():
             exclusive_file(Path(name), payload)
     report.pop("planId", None)
@@ -576,7 +572,7 @@ def doctor_check(paths, report):
     # Only fixed row names/status tokens are exposed; never reflect arbitrary
     # guidance, paths, simulator names or child output into the setup UI.
     routes = {"profile": "Review pi-shared setup --plan for profile wiring.",
-              "extensions": "Review shared installation wiring; /setup mcp covers the optional adapter.",
+              "extensions": "Review shared installation wiring; /setup mcp covers native MCP and adapter migration.",
               "models": "Use /setup models for provider/connection guidance.",
               "dependencies": "Use /setup development or the owning pi-shared update for locked dependencies.",
               "browser_worker": "Use /setup browser for browser-worker setup.",
@@ -635,7 +631,7 @@ def operate(args, lock, read_state=None):
     except KeyboardInterrupt:
         report.pop("planId", None)
         report["summary"] = "Capability operation cancelled."
-        report["errors"].append("Cancelled; partial newly created files may remain. Existing files were not overwritten. Inspect before retrying.")
+        report["errors"].append("Cancelled; partial files may remain. For MCP migration inspect the private rollback manifest before recovery; other scaffolds never replace existing files.")
         return report, 130
     except (OSError, ValueError, RuntimeError, TypeError) as exc:
         report.pop("planId", None)
@@ -643,7 +639,7 @@ def operate(args, lock, read_state=None):
         report["errors"].append(str(exc) if isinstance(exc, SetupError) else
                                 "Cannot safely inspect or create the selected paths. Check ownership, symlinks, permissions and context; no raw configuration or child output is disclosed.")
         if args.action == "apply":
-            report["warnings"].append("An interrupted scaffold may leave newly created files; inspect before retrying. Existing targets are never replaced.")
+            report["warnings"].append("An interrupted operation may leave newly created files; inspect before retrying. MCP migration may also have changed profile settings: use its private backup manifest for hash-checked rollback. Other scaffolds never replace targets.")
         return report, 1
 
 

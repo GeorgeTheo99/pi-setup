@@ -308,10 +308,10 @@ def test_mcp_declaration_no_credentials_or_claim_loaded(fixture):
     path.write_text(json.dumps({"packages": [{"source": "npm:pi-mcp-adapter@1.2.3", "extensions": []}], "apiKey": "NEVERPRINT"}))
     before = path.read_bytes()
     report, code = operate(fixture, "mcp")
-    assert code == 0 and report["status"] == "configured-untested"
+    assert code == 0 and report["status"] == "needs-configuration"
     assert "NEVERPRINT" not in json.dumps(report)
-    assert "current-session load unknown" in report["evidence"][0]["value"]
-    assert shlex.split(report["handoffs"][0]["command"]) == ["env", "PI_CODING_AGENT_DIR=" + str(fixture.agent), "pi", "install", "npm:pi-mcp-adapter"]
+    assert "current-session readiness" in " ".join(report["warnings"])
+    assert shlex.split(report["handoffs"][0]["command"]) == ["env", "PI_CODING_AGENT_DIR=" + str(fixture.agent), "pi", "mcp", "list"]
     assert path.read_bytes() == before
 
 

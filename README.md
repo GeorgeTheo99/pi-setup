@@ -77,7 +77,9 @@ module installers used below. The new CLI defaults writable module checkouts to
 Peekaboo MCP server: full-catalog `--mode direct`, or desktop-app permission owner
 `--mode bridge --bridge-socket /absolute/path` with only browser tools temporarily
 disabled. Omitted mode preserves an exact existing route, otherwise defaults to
-direct; conflicting entries are never migrated. Start with
+direct; conflicting entries are never migrated. New profiles target official
+Pi 0.99.1 native `<agent-dir>/mcp.json`; detected legacy adapter installs remain on
+the adapter with a warning until [explicit MCP migration](docs/mcp.md). Start with
 `pi-shared peekaboo plan --json`; applying requires explicit approval and that
 plan's ID. JSON schema 2 includes route, socket and permission-source evidence.
 This is not a setup module or service, does not install/launch the app or grant
@@ -89,9 +91,11 @@ before selecting a binary or explicitly installing the older 4.5.0 CLI pin.
 `pi-shared capability COMPONENT {plan,apply,check}` backs the expanded `/setup`
 menu in compatible shared modules: search, browser, MCP, development, documents,
 Apple prerequisites, private knowledge, models and diagnostics. Plans are offline;
-checks are explicit. Only missing project configs and new private KB metadata
-layouts can be created after exact-plan approval. Existing files and trust remain
-unchanged. Broader installation, service and indexing operations are displayed
+checks are explicit. Missing project configs and new private KB metadata layouts
+can be created after exact-plan approval. MCP also offers [profile-scoped native
+migration](docs/mcp.md) with private rollback backups, conservative restriction
+translation, and scoped settings edits; existing native MCP targets are never
+overwritten. Project trust remains unchanged. Broader installation, service and indexing operations are displayed
 as terminal handoffs to their existing owners—not silently executed. Peekaboo
 retains its separate contract above. [Capability CLI, options and limits](docs/capabilities.md).
 
@@ -477,11 +481,13 @@ bin/doctor --smoke-model sonnet         # opt into one real completion via pi-so
   Any failed installer or doctor exits nonzero; earlier completed installs
   are not rolled back. No success message follows failed checks.
 
-Inside Pi, `/mcp` lists servers managed by the optional MCP adapter only.
-The native browser/search wrappers connect to their independent MCP services
-outside that adapter. With the environment-doctor extension loaded, use
-`/mcp-connections` (or `dev_doctor`) to see both paths without connecting to
-services. This does not change server registration or make tools service-ready.
+Inside Pi 0.99.1, `/mcp` manages official native MCP servers unless an installed
+adapter replaces that command. [MCP setup/migration](docs/mcp.md) explains the
+profile configuration and explicit approval steps. Browser/search wrappers remain
+independent of both MCP backends. With the environment-doctor extension loaded,
+`/mcp-connections` (or `dev_doctor`) provides only the inventory supported by that
+installed extension version; do not infer native-session readiness from adapter
+inventory. No inventory command changes registration or makes tools service-ready.
 
 ### Browser dependency
 

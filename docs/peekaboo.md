@@ -26,11 +26,24 @@ pi-shared peekaboo apply --mode bridge --bridge-socket /absolute/path/to/bridge.
 pi-shared peekaboo check --json
 ```
 
-All actions accept `--config /absolute/path/to/mcp.json`; the default is
-`~/.config/mcp/mcp.json`. Repeat the **same binary/config/install/mode/socket choices**
+New setups default to official **Pi 0.99.1 native MCP**, writing
+`<agent-dir>/mcp.json`. `--agent-dir ABS` selects the profile; otherwise
+`PI_CODING_AGENT_DIR` or `~/.pi/agent` is used. Detected legacy adapter declarations
+or an existing legacy config without a native target retain the adapter route with
+an explicit warning, not a silent migration. A completed [MCP migration](mcp.md)
+is preferred even while its untouched legacy source remains on disk.
+
+All actions accept `--config /absolute/path/to/mcp.json` and
+`--backend native|adapter`. With an explicit path, an existing adapter Peekaboo
+entry is recognized; otherwise the new-entry default is native. Use
+`--backend adapter` explicitly for a new entry in a custom adapter file. Native
+selection refuses profiles still declaring the adapter or disabling `builtin:mcp`;
+review capability MCP migration first. Peekaboo does not rewrite profile settings.
+Repeat the **same agent-dir/backend/binary/config/install/mode/socket choices**
 from `plan` in `apply`. A changed config, executable, adjacent runtime library or
 Bridge socket metadata invalidates approval. Socket selection and route are also
-part of the approval digest. There are no interactive prompts. `--yes` alone is not enough.
+part of the approval digest, along with profile settings and backend selection.
+There are no interactive prompts. `--yes` alone is not enough.
 Help never inspects configuration or starts anything.
 
 `--mode direct|bridge` selects the route. When omitted, an **exactly recognized**
@@ -107,7 +120,7 @@ version directory. Inspect it before retrying—no automatic destructive cleanup
 
 ## Configuration and ownership
 
-The exact direct, full-catalog entry is:
+For new native setups, the exact direct, full-catalog entry is:
 
 ```json
 {
@@ -115,15 +128,15 @@ The exact direct, full-catalog entry is:
     "peekaboo": {
       "command": "/absolute/path/to/peekaboo",
       "args": ["mcp", "--no-remote", "--allow-foreground"],
-      "lifecycle": "lazy-keep-alive",
-      "requestTimeoutMs": 30000,
-      "directTools": false
+      "timeout": 30,
+      "enabled": true,
+      "exposure": "codemode"
     }
   }
 }
 ```
 
-The exact native-only Bridge entry differs only in `args` and its fixed `env`:
+The exact browser-disabled Bridge entry differs only in `args` and its fixed `env`:
 
 ```json
 {
@@ -132,15 +145,22 @@ The exact native-only Bridge entry differs only in `args` and its fixed `env`:
       "command": "/absolute/path/to/peekaboo",
       "args": ["mcp", "--bridge-socket", "/absolute/path/to/bridge.sock", "--allow-foreground"],
       "env": {"PEEKABOO_DISABLE_TOOLS": "browser"},
-      "lifecycle": "lazy-keep-alive",
-      "requestTimeoutMs": 30000,
-      "directTools": false
+      "timeout": 30,
+      "enabled": true,
+      "exposure": "codemode"
     }
   }
 }
 ```
 
-No adapter include/exclude filters or approval lists are installed. Bridge's
+Native MCP connects at session startup, not lazily. `codemode` controls tool
+discovery through scripts (also accessible to `tool_search`), not connection lifecycle. The MCP migration
+produces this same entry, so Peekaboo plan/apply/check recognize it afterward.
+Existing legacy adapter entries instead use `lifecycle: "lazy-keep-alive"`,
+`requestTimeoutMs: 30000`, and `directTools: false` in place of native
+`timeout`/`enabled`/`exposure`; they remain supported without normalization.
+
+No include/exclude filters or approval lists are installed. Bridge's
 browser-only exclusion is fixed, not a generic environment passthrough; any other
 `env` or entry shape conflicts. Foreground support is explicit; this is not a
 semantic authorization boundary or desktop lock. Optional
@@ -188,14 +208,16 @@ screen, lists apps/windows, dispatches an action, or calls a model provider. A
 denied/unknown permission produces nonzero exit. This strict check includes Event
 Synthesizing even though some background accessibility actions do not require it.
 Granted direct permissions describe **this setup process's responsible host**, not
-a later Pi adapter process. Bridge permissions describe the selected desktop app's
+a later Pi MCP process. Bridge permissions describe the selected desktop app's
 Bridge permission owner, not local CLI grants. Denial guidance names the selected
 owner; permissions and required restarts remain manual. MCP initialize/listTools
-and adapter-mediated permissions are **not implemented by this backend**. No tool
+and MCP-mediated permissions are **not implemented by this backend**. No tool
 count (including a native-only count) is invented or treated as readiness.
 
-After applying, restart Pi or `/reload` and discover the server through its MCP
-adapter. Verify permissions again from that actual host. These steps do not imply
+After applying, restart Pi or `/reload` and discover the server through its selected
+MCP backend (`/mcp`; codemode or `tool_search` for native tools). Runtime upgrades
+require restarting Pi. For native connection checks, separately approve
+`env PI_CODING_AGENT_DIR=AGENT pi mcp list`, which starts every enabled server. Verify permissions again from that actual host. These steps do not imply
 that the current Pi session has reloaded config. Only separately authorized,
 scoped observation/action tests could provide desktop evidence.
 

@@ -22,7 +22,7 @@ this backend. No discovery of an ancestor project or implicit active profile.
 
 - **Plan:** offline filesystem inventory only; no processes, network, locks,
   prompts, credentials, or writes.
-- **Apply:** only the missing-only scaffolds below. Repeat the identical options
+- **Apply:** the missing-only scaffolds below, plus explicit profile MCP migration. Repeat the identical options
   and context with `--yes --expected-plan <64-lowercase-hex-planId>`. No prompts.
   Unsupported apply, an existing target, or stale approval is an error, not a
   successful no-op. Plan IDs are absent when there is nothing to apply.
@@ -46,7 +46,7 @@ to 16 KiB. Omit optional blank fields rather than supplying empty strings.
 | --- | --- | --- |
 | `search` | `mode`: `guided` (default), `local`, `existing`; local requires absolute `keyFile`; existing requires `url`, permits absolute `keyFile` | Handoff to `pi-shared setup --guided`, `--search local --brave-key-file PATH`, or `--search existing --search-url URL [--search-key-file PATH]`. Local Brave keys and broker bearer keys use different flags. No key contents are opened. |
 | `browser` | `mode`: `public` (default), `app` | Public handoff: `setup --with-browser`. Source app handoff: quoted `cd`, `npm ci --ignore-scripts`, then supplied Node/local Playwright CLI. Managed installs instead offer `pi-shared update` for dependencies and a separate local-CLI Chromium user-cache install. Never uncontrolled `npx` fetching. |
-| `mcp` | `{}` | Bounded inspection of `AGENT/settings.json` package declarations only. Handoffs: `env PI_CODING_AGENT_DIR=AGENT pi install npm:pi-mcp-adapter`, then `/mcp setup` in that profile. Declaration does not establish current-session loading. No MCP credentials inspected. |
+| `mcp` | `mode`: `native` (default), `migrate`; migration permits absolute `sourceConfig` | Native profile inventory, or digest-approved adapter conversion into missing `AGENT/mcp.json` with private backups and scoped `settings.json` edits. Source is unchanged; credentials are never printed/executed. Ambiguous policies and existing targets are refused. See [official MCP migration](mcp.md). |
 | `development` | `mode`: `code-intel` (default), `verification`; verification optionally accepts `command`, `args`, `inputs` together | Missing-only project configuration, described below. No guessed command, install, execution or trust. |
 | `documents` | `{}` | Static standard-location executable inventory for LibreOffice/soffice, Poppler/pdfinfo and pdftoppm. macOS handoffs: `brew install --cask libreoffice` and `brew install poppler`; other platforms receive package-manager guidance. No document conversion or rendering. |
 | `apple` | `{}` | Plan inspects platform/standard Xcode location. Check performs the three bounded probes below. Full Xcode installation, developer-directory selection and simulator installation remain manual. |
@@ -60,8 +60,9 @@ explicitly warn that `pi-shared update` applies immediately without confirmation
 can upgrade the CLI/runtime and all saved modules, and may rewire profiles/restart
 shared services. It is not dependency-only repair. Broad setup preserves saved choices and can affect shared services and
 profile wiring beyond the chosen capability; review its full plan and consent
-there. External MCP packages run with full machine permissions: review source
-before installing. Do not execute source dependency commands against
+there. Native MCP is built into Pi 0.99.1; the default MCP handoff no longer installs
+an adapter. MCP servers and external packages run with full machine permissions:
+review source before starting/installing them. Do not execute source dependency commands against
 package-manager-owned installed artifacts; use the owning managed update/release
 workflow instead. Ownership detection includes conventional managed roots and the
 custom `code_root` from the existing CLI's fully validated saved receipt. Invalid
@@ -172,6 +173,10 @@ PATH directories for static executable inventory; never arbitrary project script
 Doctor's usual static browser inventory uses the user's research configuration;
 its selected profile inventory receives the explicit agent directory.
 
+MCP migration reads source/profile JSON only to convert and back it up privately;
+it never opens OAuth/keychain stores or executes credential references. Native
+`pi mcp list` is a separate handoff because it connects every enabled server.
+
 No raw subprocess output, configuration content, credentials, simulator names or
 doctor guidance are printed. Doctor emits aggregate counts plus allowlisted
 capability/status tokens and fixed actionable setup guidance. `verified`
@@ -185,7 +190,10 @@ content and identities, relevant existing target state, and directory ancestry.
 Apply validates the approval, acquires the existing per-user
 `~/.config/pi-shared/update.lock`, then reinspects and compares the digest. Target
 creation uses no-follow directory descriptors and exclusive files/directories,
-never replacement. Existing config must be regular, single-link, safely owned and
+never replacement. The explicit MCP migration exception narrowly replaces profile
+settings only after private backups and compare-before-replace checks; native MCP
+targets still must be missing. Its [rollback manifest](mcp.md#backups-and-rollback)
+provides original/proposed hashes and exact backups. Existing config must be regular, single-link, safely owned and
 not shared-writable; reads are bounded to 1 MiB (code-intel dependencies: 32 MiB).
 No setup receipt is adopted or written. New scaffold files belong to the user;
 manual cleanup must review only those files, not delete an existing directory.
@@ -195,6 +203,8 @@ not a filesystem sandbox, authenticity proof of the supplied shared distribution
 or atomic multi-file transaction. Do not concurrently edit targets during apply.
 A failed/cancelled operation may leave new directories/partial scaffold files;
 they are deliberately not overwritten on retry. Inspect them manually first.
+MCP migration can also leave changed profile settings; use its private manifest
+for hash-checked manual rollback, never overwrite later edits.
 
 ## JSON and exit contract
 
@@ -230,5 +240,5 @@ cancellation 130. Successful apply/check omit the approval digest.
 Tests (disposable fixtures, no live installation):
 
 ```sh
-PYTHONDONTWRITEBYTECODE=1 pytest -q -p no:cacheprovider tests/test_capability_setup.py
+PYTHONDONTWRITEBYTECODE=1 pytest -q -p no:cacheprovider tests/test_capability_setup.py tests/test_mcp_setup.py
 ```

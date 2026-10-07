@@ -157,10 +157,13 @@ def parse_json(raw):
         raise SetupError("Invalid JSON; no configuration was changed.") from None
 
 
-def entry(binary, mode="direct", bridge_socket=None):
+def entry(binary, mode="direct", bridge_socket=None, backend="adapter"):
     route = ["--bridge-socket", str(bridge_socket)] if mode == "bridge" else ["--no-remote"]
     value = {"command": str(binary), "args": ["mcp", *route, "--allow-foreground"],
              "lifecycle": "lazy-keep-alive", "requestTimeoutMs": 30000, "directTools": False}
+    if backend == "native":
+        value = {"command": str(binary), "args": value["args"],
+                 "timeout": 30, "enabled": True, "exposure": "codemode"}
     if mode == "bridge":
         value["env"] = {"PEEKABOO_DISABLE_TOOLS": "browser"}
     return value
@@ -185,7 +188,7 @@ def socket_snapshot(path, report):
     return stamp(info)
 
 
-def select_route(args, existing, report):
+def select_route(args, existing, report, backend="adapter"):
     """Recognize only exact owned shapes; never migrate or normalize an entry."""
     mode, socket = args.mode, None
     if args.bridge_socket is not None:
@@ -195,16 +198,18 @@ def select_route(args, existing, report):
     existing_mode, existing_socket = None, None
     if existing is not None:
         if (not isinstance(existing, dict) or not isinstance(existing.get("command"), str) or
-                type(existing.get("directTools")) is not bool or
-                type(existing.get("requestTimeoutMs")) is not int):
+                backend == "adapter" and (type(existing.get("directTools")) is not bool or
+                type(existing.get("requestTimeoutMs")) is not int) or
+                backend == "native" and (type(existing.get("enabled")) is not bool or
+                type(existing.get("timeout")) not in {int, float})):
             raise SetupError("Existing Peekaboo entry conflicts with the exact direct/Bridge policy.")
-        if existing == entry(existing["command"]):
+        if existing == entry(existing["command"], backend=backend):
             existing_mode = "direct"
         else:
             argv = existing.get("args")
             if isinstance(argv, list) and len(argv) == 4 and isinstance(argv[2], str):
                 existing_socket = path_value(argv[2])
-                if existing == entry(existing["command"], "bridge", existing_socket):
+                if existing == entry(existing["command"], "bridge", existing_socket, backend):
                     existing_mode = "bridge"
             if existing_mode is None:
                 raise SetupError("Existing Peekaboo entry conflicts with the exact direct/Bridge policy.")
@@ -250,11 +255,42 @@ def discover():
     return None
 
 
+def mcp_target(args, report):
+    """Native for new profiles; never silently redirect an existing adapter setup."""
+    from mcp_setup import native_settings, object_file
+    agent = path_value(getattr(args, "agent_dir", None) or os.environ.get("PI_CODING_AGENT_DIR") or str(Path.home() / ".pi/agent"))
+    settings, _, settings_stamp = object_file(agent / "settings.json")
+    _, adapters = native_settings(settings)
+    legacy = Path.home() / ".config/mcp/mcp.json"
+    native = agent / "mcp.json"
+    native_raw, native_stamp = read_file(native, MAX_CONFIG)
+    legacy_raw, legacy_stamp = read_file(legacy, MAX_CONFIG)
+    backend = getattr(args, "backend", None)
+    explicit = path_value(args.config) if args.config else None
+    if backend is None:
+        if explicit:
+            document, _, _ = object_file(explicit)
+            existing = document.get("mcpServers", {}).get("peekaboo") if isinstance(document.get("mcpServers", {}), dict) else None
+            backend = "adapter" if isinstance(existing, dict) and "requestTimeoutMs" in existing else "native"
+        else:
+            backend = "adapter" if adapters or native_raw is None and legacy_raw is not None else "native"
+    config = explicit or (native if backend == "native" else legacy)
+    if backend == "native":
+        if adapters or "-builtin:mcp" in settings.get("extensions", []):
+            raise SetupError("Selected profile still loads the adapter or disables native MCP. Run capability mcp migration (or review profile settings) first; Peekaboo never silently switches backends.")
+        report["warnings"].append("Official Pi 0.99.1 MCP: codemode tool discovery, but the server connects at session startup (not adapter lazy lifecycle). Project/CLI/custom extension overrides remain unverified.")
+    else:
+        report["warnings"].append("Legacy adapter MCP configuration preserved explicitly; this is not native Pi MCP readiness. Use capability mcp mode migrate to review profile migration before switching. No adapter is installed or uninstalled here.")
+    report["actions"].append("MCP backend: " + backend + "; configuration: " + str(config))
+    return config, backend, {"agentDir": str(agent), "settings": settings_stamp,
+                             "native": native_stamp, "legacy": legacy_stamp}
+
+
 def inspect(args, report):
     report["evidence"]["mode"] = args.mode or "direct"
     if args.mode == "bridge":
         report["evidence"]["bridgeSocketState"] = "invalid"
-    config = path_value(args.config or str(Path.home() / ".config/mcp/mcp.json"))
+    config, backend, profile_stamp = mcp_target(args, report)
     report["evidence"]["configuration"] = "invalid"
     raw, config_stamp = read_file(config, MAX_CONFIG)
     document = parse_json(raw) if raw is not None else {}
@@ -270,7 +306,7 @@ def inspect(args, report):
             raise SetupError("Another Peekaboo entry already exists; resolve it manually.")
     if "peekaboo" in servers and existing is None:
         raise SetupError("Existing Peekaboo entry conflicts with the exact direct/Bridge policy.")
-    mode, socket, socket_stamp = select_route(args, existing, report)
+    mode, socket, socket_stamp = select_route(args, existing, report, backend)
     configured = path_value(existing["command"]) if existing is not None else None
     binary = path_value(args.binary) if args.binary else configured or discover()
     if existing is not None and binary != configured:
@@ -313,7 +349,8 @@ def inspect(args, report):
                  "install": args.install, "version": VERSION, "sha256": SHA256,
                  "mode": mode, "bridgeSocketPath": str(socket) if socket else None,
                  "bridgeSocketStamp": socket_stamp,
-                 "entry": entry(binary, mode, socket) if binary else None, "schemaVersion": 2}
+                 "entry": entry(binary, mode, socket, backend) if binary else None, "schemaVersion": 2,
+                 "backend": backend, "profileStamp": profile_stamp}
     report["planId"] = hashlib.sha256(json.dumps(selection, sort_keys=True).encode()).hexdigest()
     return config, document, selection
 
@@ -431,7 +468,7 @@ def permissions(binary, report):
             "Open System Settings > Privacy & Security > Accessibility and Screen & System Audio Recording; approve the selected Peekaboo desktop app (Bridge permission owner)."
             if bridge else
             "Open System Settings > Privacy & Security > Accessibility and Screen & System Audio Recording; approve the actual CLI/responsible host shown by macOS, not an unrelated Peekaboo.app.",
-            "If macOS requests a restart, restart the selected permission host yourself, then recheck through Pi's MCP adapter. Direct setup-process grants can differ; do not restart other sessions automatically."])
+            "If macOS requests a restart, restart the selected permission host yourself, then recheck through Pi's selected MCP backend. Direct setup-process grants can differ; do not restart other sessions automatically."])
         raise SetupError("One or more permissions are denied for the selected host; no permission request was made.")
 
 
@@ -614,13 +651,15 @@ def operate(args, lock):
                     raise SetupError("Bridge socket changed after planning; create a fresh plan.")
                 if read_file(config, MAX_CONFIG)[1] != selection["configStamp"]:
                     raise SetupError("Configuration changed after planning; no configuration was overwritten.")
+                if mcp_target(args, result(args.action))[2] != selection["profileStamp"]:
+                    raise SetupError("MCP profile/backend selection changed during validation; create a fresh plan.")
                 if report["evidence"]["configuration"] != "matching":
                     write_config(config, document, selection)
                     report["actions"].append("Wrote Peekaboo configuration atomically; unrelated settings preserved.")
                 report["evidence"]["configuration"] = "matching"
             report["summary"] = "Peekaboo CLI validated and configured; MCP, permissions and desktop not tested."
             report["nextSteps"].extend(["Run pi-shared peekaboo check --json for explicit read-only CLI/permission probes.",
-                "Restart Pi or /reload, then discover Peekaboo through the MCP adapter; recheck permissions from that host."])
+                "Restart Pi or /reload, then discover Peekaboo through /mcp in the selected backend; recheck permissions from that actual host."])
         elif args.action == "check":
             if args.install:
                 raise SetupError("--install is only supported by plan/apply; check never installs.")
@@ -662,7 +701,9 @@ def main(argv, lock):
                     epilog="Plans/status are offline. Apply needs --yes and a matching plan ID. No TCC requests, services, app installation/launch, provider setup or desktop actions.")
     parser.add_argument("action", choices=["plan", "status", "apply", "check"])
     parser.add_argument("--json", action="store_true", help="Emit only the schema-v2 JSON result on stdout")
-    parser.add_argument("--config", metavar="ABS", help="MCP JSON path (default ~/.config/mcp/mcp.json)")
+    parser.add_argument("--config", metavar="ABS", help="Explicit MCP JSON path; default selected profile mcp.json for new native setups")
+    parser.add_argument("--agent-dir", metavar="ABS", help="Profile directory (default PI_CODING_AGENT_DIR or ~/.pi/agent)")
+    parser.add_argument("--backend", choices=["native", "adapter"], help="Default native for new setups; preserve detected legacy adapter installs with a warning")
     parser.add_argument("--binary", metavar="ABS", help="Existing signed executable; never search PATH")
     parser.add_argument("--mode", choices=["direct", "bridge"], help="Preserve an exact existing route when omitted; otherwise default direct")
     parser.add_argument("--bridge-socket", metavar="ABS", help="Bridge socket path; required for a new Bridge entry, never auto-discovered")

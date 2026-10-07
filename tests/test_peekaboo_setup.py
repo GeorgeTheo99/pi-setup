@@ -18,6 +18,7 @@ import urllib.request
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "lib"))
 spec = importlib.util.spec_from_file_location("peekaboo_setup", ROOT / "lib/peekaboo_setup.py")
 p = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(p)
@@ -27,6 +28,7 @@ spec.loader.exec_module(p)
 def home(tmp_path, monkeypatch):
     tmp_path = tmp_path.resolve()
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
     monkeypatch.setattr(p.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(p.platform, "machine", lambda: "arm64")
     monkeypatch.setattr(p, "discover", lambda: None)
@@ -44,7 +46,8 @@ def binary(home):
 def args(action="plan", **kwargs):
     return SimpleNamespace(**({"action": action, "config": None, "binary": None,
                               "install": False, "yes": False, "expected_plan": None,
-                              "mode": None, "bridge_socket": None} | kwargs))
+                              "mode": None, "bridge_socket": None,
+                              "backend": "adapter", "agent_dir": None} | kwargs))
 
 
 @contextmanager
@@ -996,6 +999,7 @@ def test_sigterm_unwinds_probe_process_group(home, binary):
     sleeper = "import os,time; from pathlib import Path; Path(" + repr(str(pid_file)) + ").write_text(str(os.getpid())); time.sleep(60)"
     script = f"""
 import importlib.util,sys
+sys.path.insert(0, {str(ROOT / 'lib')!r})
 from contextlib import nullcontext
 spec=importlib.util.spec_from_file_location('p', {str(ROOT / 'lib/peekaboo_setup.py')!r})
 p=importlib.util.module_from_spec(spec);spec.loader.exec_module(p)
