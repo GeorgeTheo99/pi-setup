@@ -227,7 +227,7 @@ def test_endpoint_change_never_reuses_saved_bearer(home):
 @pytest.mark.parametrize("credential", ["file", "hidden"])
 def test_interactive_local_credential_collection_no_write(home, monkeypatch, credential, capsys):
     source = private(home / "source/key")
-    answers = iter(["local", credential])
+    answers = iter(["local", credential, "skip"])
     monkeypatch.setattr("builtins.input", lambda _: str(source))
     monkeypatch.setattr(search.getpass, "getpass", lambda _: TOKEN)
     before = snapshot(home)
@@ -239,7 +239,8 @@ def test_interactive_local_credential_collection_no_write(home, monkeypatch, cre
 
 def test_interactive_local_reuse_does_not_read_hidden_input(home):
     key = private(home / "data/brave_key")
-    selected, secrets = collect(home, search="local", interactive=True, choose=lambda *_: "reuse",
+    answers = iter(["reuse", "skip"])
+    selected, secrets = collect(home, search="local", interactive=True, choose=lambda *_: next(answers),
                                 env={"LOCAL_SEARCH_DATA_DIR": str(key.parent)})
     assert selected["data_dir"] == str(key.parent) and secrets == {}
 
@@ -405,7 +406,8 @@ def test_unsafe_config_prevents_key_provisioning(home, damage):
 @pytest.mark.parametrize("extra", [dict(search="skip", with_search=True), dict(search="existing", with_search=True),
     dict(search="skip", search_url="https://example/mcp"), dict(search="local", search_key_file="/key"),
     dict(search="existing", brave_key_file="/key"), dict(search="skip", brave_key_file="/key"),
-    dict(search="existing", search_port=9000), dict(search="skip", search_port=9000)])
+    dict(search="existing", search_port=9000), dict(search="skip", search_port=9000),
+    dict(search="existing", decodo_key_file="/key"), dict(search="skip", decodo_key_file="/key")])
 def test_explicit_option_conflicts_even_in_plan(home, extra):
     with pytest.raises(RuntimeError):
         collect(home, plan=True, **extra)
@@ -560,3 +562,88 @@ def test_hidden_token_reconfiguration_applies_without_overwriting_original(home,
     assert config["websearchMcpKeyFile"] == str(target)
     assert config["websearchMcpKeyUrl"] == url
     assert collect(home, previous={"search": selected}) == (selected, {})
+
+
+DECODO = "synthetic-decodo-test-token"
+
+
+def test_decodo_flag_is_pending_until_apply_and_provisions_private_file(home, capsys):
+    brave = private(home / "source/brave")
+    decodo = private(home / "source/decodo", DECODO)
+    before = snapshot(home)
+    selected, secrets = collect(home, search="local", brave_key_file=str(brave), decodo_key_file=str(decodo))
+    assert secrets == {"brave_key": TOKEN, "decodo_key": DECODO} and snapshot(home) == before
+    search.describe(selected)
+    assert DECODO not in json.dumps(selected) + capsys.readouterr().out
+    search.apply(selected, secrets, {})
+    target = Path(selected["data_dir"]) / "decodo_key"
+    assert target.read_text() == DECODO + "\n"
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert DECODO not in (home / ".pi/research/config.json").read_text()
+
+
+def test_decodo_flag_is_not_read_in_plan(home):
+    selected, secrets = collect(home, search="local", plan=True, brave_key_file="/missing/brave",
+                                decodo_key_file="/missing/decodo")
+    assert secrets == {} and not list(home.iterdir())
+
+
+def test_decodo_is_optional_without_flag_or_prompt(home):
+    brave = private(home / "source/brave")
+    selected, secrets = collect(home, search="local", brave_key_file=str(brave))
+    search.apply(selected, secrets, {})
+    assert secrets == {"brave_key": TOKEN}
+    assert not (Path(selected["data_dir"]) / "decodo_key").exists()
+
+
+@pytest.mark.parametrize("method", ["file", "hidden"])
+def test_interactive_decodo_prompt_collects_token(home, monkeypatch, method, capsys):
+    brave = private(home / "source/brave")
+    decodo = private(home / "source/decodo", DECODO)
+    questions = []
+
+    def choose(question, choices):
+        questions.append((question, list(choices)))
+        return method
+    monkeypatch.setattr("builtins.input", lambda _: str(decodo))
+    monkeypatch.setattr(search.getpass, "getpass", lambda _: DECODO)
+    selected, secrets = collect(home, search="local", brave_key_file=str(brave), interactive=True, choose=choose)
+    assert secrets == {"brave_key": TOKEN, "decodo_key": DECODO}
+    # Skip is the first (default) choice of the only prompt asked.
+    assert questions == [("Decodo fetch fallback (optional):", ["skip", "file", "hidden"])]
+    assert "Jina Reader" in capsys.readouterr().out
+
+
+def test_interactive_existing_decodo_token_is_kept_without_prompt(home):
+    brave = private(home / "data/brave_key")
+    private(home / "data/decodo_key", DECODO)
+    answers = iter(["reuse"])
+    selected, secrets = collect(home, search="local", interactive=True, choose=lambda *_: next(answers),
+                                env={"LOCAL_SEARCH_DATA_DIR": str(brave.parent)})
+    assert secrets == {}
+
+
+def test_interactive_existing_unsafe_decodo_token_fails_before_writes(home):
+    brave = private(home / "data/brave_key")
+    private(home / "data/decodo_key", DECODO).chmod(0o644)
+    with pytest.raises(RuntimeError, match="0600"):
+        collect(home, search="local", interactive=True, choose=lambda *_: "reuse",
+                env={"LOCAL_SEARCH_DATA_DIR": str(brave.parent)})
+
+
+def test_apply_never_overwrites_different_decodo_token_and_writes_nothing(home):
+    private(home / "data/decodo_key", "original")
+    brave = private(home / "source/brave")
+    decodo = private(home / "source/decodo", DECODO)
+    selected, secrets = collect(home, search="local", brave_key_file=str(brave), decodo_key_file=str(decodo),
+                                env={"LOCAL_SEARCH_DATA_DIR": str(home / "data")})
+    before = snapshot(home)
+    with pytest.raises(RuntimeError, match="different value"):
+        search.apply(selected, secrets, {})
+    assert snapshot(home) == before
+
+
+def test_pending_decodo_secret_rejected_for_existing_endpoint(home, compatible_inventory):
+    selected, _ = existing(home)
+    with pytest.raises(RuntimeError, match="Invalid pending"):
+        search.apply(selected, {"decodo_key": DECODO}, {})

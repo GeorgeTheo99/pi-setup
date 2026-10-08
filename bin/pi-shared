@@ -926,6 +926,8 @@ Use --plan first. Terminal setup asks for approval; scripts need --yes.
   Add local Brave search (requires your Brave Search API key file):
     pi-shared setup --search local \\
       --brave-key-file "$HOME/.config/pi-shared/brave.key" --plan
+    Optionally add --decodo-key-file "$HOME/.config/pi-shared/decodo.key" for
+    the Decodo page-fetch fallback; --guided offers it as a skippable step.
   Use an existing search MCP server (must expose web_search and web_fetch):
     pi-shared setup --search existing --search-url https://search.example/mcp \\
       --search-key-file "$HOME/.config/pi-shared/search.key" --plan
@@ -992,6 +994,7 @@ Safety and prerequisites:
     search.add_argument("--search-url", help="Existing search MCP HTTP(S) endpoint; must expose web_search and web_fetch")
     search.add_argument("--search-key-file", help="Private 0600 broker bearer-token file (not a Brave key)")
     search.add_argument("--brave-key-file", help="Private 0600 Brave API key file to provision local search")
+    search.add_argument("--decodo-key-file", help="Optional private 0600 Decodo Web Scraping API token file (value after 'Basic') for local search's page-fetch fallback")
     search.add_argument("--search-port", type=int, help="Local search loopback port (default 8889 or saved port)")
     optional = p.add_argument_group("Optional checks and guidance")
     omnigent = optional.add_mutually_exclusive_group()

@@ -88,7 +88,7 @@ def test_setup_help_groups_all_options_and_explains_safety(tmp_path):
         "Local models (oMLX)": ["--omlx", "--omlx-url"],
         "Browser automation": ["--without-browser", "--with-browser"],
         "Web search": ["--search", "--with-search", "--search-url", "--search-key-file",
-                       "--brave-key-file", "--search-port"],
+                       "--brave-key-file", "--decodo-key-file", "--search-port"],
         "Optional checks and guidance": ["--with-omnigent", "--without-omnigent", "--recovery"],
     }
     for title, flags in groups.items():

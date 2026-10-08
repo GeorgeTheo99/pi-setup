@@ -396,6 +396,7 @@ Fresh local data lives outside the module checkout, so no pre-clone is needed.
 pi-shared setup --search local --brave-key-file /absolute/private/brave.key --plan
 pi-shared setup --search existing --search-url https://search.example/mcp --plan
 # Optional existing-server authentication: --search-key-file /absolute/private/broker.key
+# Optional local Decodo fetch fallback: --decodo-key-file /absolute/private/decodo.key
 # Review, then replace --plan with --yes. Plans never read keys or contact servers.
 ```
 

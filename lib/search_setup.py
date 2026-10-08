@@ -1,7 +1,8 @@
 """Search onboarding. collect stays offline; apply runs only after approval.
 
 Selections are JSON-safe references, never credentials. Pending secrets use only
-``brave_key`` (local provider) and ``search_key`` (existing broker bearer token).
+``brave_key`` and the optional ``decodo_key`` (local provider) and ``search_key``
+(existing broker bearer token).
 The caller must not persist, log, or pass that second dictionary to subprocesses.
 """
 from __future__ import annotations
@@ -24,6 +25,9 @@ import warnings
 
 
 BRAVE_SIGNUP = "https://api-dashboard.search.brave.com/"
+DECODO_NOTE = ("Optional: a Decodo Web Scraping API token lets local search recover pages that block "
+               "direct fetches. Use only the value after 'Basic' in the Playground Authorization header. "
+               "Without it, recovery falls back to Jina Reader.")
 _PROBE_TIMEOUT = 10
 _PROBE_FAILURE = "Search tools/list could not connect or read a response; check endpoint, TLS and reachability"
 
@@ -220,11 +224,12 @@ def collect(args, previous, env, code_root, interactive, choose):
     url_arg = getattr(args, "search_url", None)
     key_arg = getattr(args, "search_key_file", None)
     brave_arg = getattr(args, "brave_key_file", None)
+    decodo_arg = getattr(args, "decodo_key_file", None)
     port_arg = getattr(args, "search_port", None)
     if (url_arg is not None or key_arg is not None) and kind != "existing":
         raise RuntimeError("--search-url and --search-key-file require --search existing")
-    if (brave_arg is not None or port_arg is not None) and kind != "local":
-        raise RuntimeError("--brave-key-file and --search-port require --search local")
+    if (brave_arg is not None or decodo_arg is not None or port_arg is not None) and kind != "local":
+        raise RuntimeError("--brave-key-file, --decodo-key-file and --search-port require --search local")
     if kind == "skip":
         return {"kind": "skip", "url": None}, {}
     secrets = {}
@@ -312,6 +317,28 @@ def collect(args, previous, env, code_root, interactive, choose):
                 _secret(_read_file(target))
             elif not (legacy or (explicit is None and not saved and "local_web_search" in previous.get("modules", ()))):
                 raise RuntimeError(f"Local search needs a private Brave key before installation; use --brave-key-file. Sign up: {BRAVE_SIGNUP}")
+        # Decodo is optional: only an explicit flag or a fresh interactive answer
+        # provisions it, and an existing token is always kept unchanged.
+        decodo = data / "decodo_key"
+        if decodo_arg is not None:
+            source = _path(decodo_arg)
+            if not plan:
+                secrets["decodo_key"] = _secret(_read_file(source))
+        elif interactive and not kept:
+            _safe_path(decodo)
+            if decodo.exists():
+                _secret(_read_file(decodo))
+                print("Decodo fetch fallback: keeping the existing private token.")
+            else:
+                print(DECODO_NOTE)
+                method = _choose(choose, "Decodo fetch fallback (optional):", {
+                    "skip": "Skip Decodo (recommended if you have no token)",
+                    "file": "Import a private Decodo token file",
+                    "hidden": "Enter a Decodo token using hidden input"})
+                if method == "file":
+                    secrets["decodo_key"] = _secret(_read_file(_path(_input("Absolute private Decodo token file (or cancel): "))))
+                elif method == "hidden":
+                    secrets["decodo_key"] = _hidden("Decodo token (hidden, or cancel): ")
         env.update(LOCAL_SEARCH_DATA_DIR=str(data), MCP_PORT=str(port))
     validate_saved(selection)
     return selection, secrets
@@ -497,7 +524,7 @@ def apply(selection, secrets, env):
     """
     validate_saved(selection)
     kind = selection["kind"]
-    allowed = {"brave_key"} if kind == "local" else {"search_key"} if kind == "existing" else set()
+    allowed = {"brave_key", "decodo_key"} if kind == "local" else {"search_key"} if kind == "existing" else set()
     if not isinstance(secrets, dict) or set(secrets) - allowed:
         raise RuntimeError("Invalid pending search credentials")
     if kind == "skip":
@@ -517,6 +544,11 @@ def apply(selection, secrets, env):
         value = pending.get("brave_key")
         if value is not None or key.exists():
             _key_preflight(key, value)
+        decodo = data / "decodo_key"
+        decodo_value = pending.get("decodo_key")
+        if decodo_value is not None:
+            _safe_path(decodo)
+            _key_preflight(decodo, decodo_value)
     elif "key_file" in selection:
         key = _path(selection["key_file"])
         value = pending.get("search_key")
@@ -532,6 +564,8 @@ def apply(selection, secrets, env):
         env.update(LOCAL_SEARCH_DATA_DIR=str(data), MCP_PORT=str(selection["port"]))
     if value is not None:
         _provision(key, value)
+    if kind == "local" and decodo_value is not None:
+        _provision(decodo, decodo_value)
     _write_config(config_path, config)
 
 

@@ -58,7 +58,9 @@ modules:
       deep_research tools. Requires a personal Brave Search API key.
     post_install_note: >-
       pi-shared setup --search local --brave-key-file accepts a private key file;
-      setup --guided (0.1.17+) also offers hidden key entry. Approved setup
-      provisions the key before starting this installer. For direct install.sh
+      setup --guided (0.1.17+) also offers hidden key entry. Optional
+      --decodo-key-file (0.1.31+, or a skippable --guided step) provisions the
+      Decodo page-fetch fallback token. Approved setup provisions keys before
+      starting this installer. For direct install.sh
       use, pre-provision data/brave_key (0600, parent 0700), or use the documented
       custom data directory. The installer fails if the key is absent or unsafe.

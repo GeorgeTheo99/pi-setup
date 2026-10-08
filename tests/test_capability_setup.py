@@ -290,6 +290,11 @@ def test_handoffs_quote_and_use_actual_flags(fixture):
     assert shlex.split(report["handoffs"][0]["command"]) == ["pi-shared", "setup", "--search", "local", "--brave-key-file", key]
     report, code = operate(fixture, "search", options={"mode": "existing", "url": "https://example.org/mcp", "keyFile": key})
     assert "--search-key-file" in shlex.split(report["handoffs"][0]["command"])
+    report, code = operate(fixture, "search", options={"mode": "local", "keyFile": key, "decodoKeyFile": key + "d"})
+    assert code == 0
+    assert shlex.split(report["handoffs"][0]["command"])[-2:] == ["--decodo-key-file", key + "d"]
+    assert operate(fixture, "search", options={"mode": "existing", "url": "https://example.org/mcp",
+                                                "decodoKeyFile": key})[1] != 0
     report, _ = operate(fixture, "browser", options={"mode": "app"})
     command = report["handoffs"][0]["command"]
     assert "npx" not in command and "npm ci --ignore-scripts" in command

@@ -70,7 +70,7 @@ def options(component, raw):
         raise SetupError("Unsupported component mode.")
     allowed = {"mode"} if modes else set()
     if component == "search":
-        allowed |= {"keyFile"} if mode == "local" else {"url", "keyFile"} if mode == "existing" else set()
+        allowed |= {"keyFile", "decodoKeyFile"} if mode == "local" else {"url", "keyFile"} if mode == "existing" else set()
     if component == "development" and mode == "verification":
         allowed |= {"command", "args", "inputs"}
     if component == "knowledge":
@@ -84,8 +84,9 @@ def options(component, raw):
     if component == "search":
         if mode == "local" and "keyFile" not in data:
             raise SetupError("Local search needs a private Brave key file path; never supply a literal key.")
-        if "keyFile" in data:
-            absolute(data["keyFile"])
+        for name in ("keyFile", "decodoKeyFile"):
+            if name in data:
+                absolute(data[name])
         if mode == "existing":
             try:
                 _url(text(data.get("url")), "keyFile" in data)
@@ -418,6 +419,9 @@ def inspect(args, report):
             # Check path ancestors but never open credentials, even for check.
             ancestors(absolute(opts["keyFile"]).parent)
             argv += ["--brave-key-file" if mode == "local" else "--search-key-file", opts["keyFile"]]
+        if "decodoKeyFile" in opts:
+            ancestors(absolute(opts["decodoKeyFile"]).parent)
+            argv += ["--decodo-key-file", opts["decodoKeyFile"]]
         setup_handoff(report, argv)
         static_file(report, paths, "Search integration", "extensions/websearch/index.ts")
         report["warnings"].append("Search credentials, endpoint authentication and tool availability are not probed. web_search/web_fetch are independent of browser tools.")
