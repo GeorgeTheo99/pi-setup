@@ -112,6 +112,8 @@ def test_all_plans_offline_and_readonly(fixture, monkeypatch, component):
     ("search", {"mode": "existing", "url": "https://example.org?token=TOPSECRET"}),
     ("search", {"mode": "existing", "url": "http://example.org", "keyFile": "/tmp/key"}),
     ("search", {"mode": "local", "keyFile": "TOPSECRET"}),
+    ("search", {"mode": "local", "keyFile": "/k", "decodoKeyFile": "TOPSECRET"}),
+    ("search", {"mode": "guided", "decodoKeyFile": "/tmp/TOPSECRET"}),
     ("development", {"mode": "code-intel", "command": "oops"}),
     ("development", {"mode": "verification", "command": "node"}),
     ("development", {"mode": "verification", "command": "node", "args": [], "inputs": ["../escape"]}),

@@ -610,7 +610,7 @@ def test_interactive_decodo_prompt_collects_token(home, monkeypatch, method, cap
     selected, secrets = collect(home, search="local", brave_key_file=str(brave), interactive=True, choose=choose)
     assert secrets == {"brave_key": TOKEN, "decodo_key": DECODO}
     # Skip is the first (default) choice of the only prompt asked.
-    assert questions == [("Decodo fetch fallback (optional):", ["skip", "file", "hidden"])]
+    assert questions == [(search.DECODO_QUESTION, ["skip", "file", "hidden"])]
     assert "Jina Reader" in capsys.readouterr().out
 
 
@@ -626,7 +626,7 @@ def test_interactive_existing_decodo_token_is_kept_without_prompt(home):
 def test_interactive_existing_unsafe_decodo_token_fails_before_writes(home):
     brave = private(home / "data/brave_key")
     private(home / "data/decodo_key", DECODO).chmod(0o644)
-    with pytest.raises(RuntimeError, match="0600"):
+    with pytest.raises(RuntimeError, match="Decodo token .*0600.*delete that file"):
         collect(home, search="local", interactive=True, choose=lambda *_: "reuse",
                 env={"LOCAL_SEARCH_DATA_DIR": str(brave.parent)})
 
@@ -638,7 +638,7 @@ def test_apply_never_overwrites_different_decodo_token_and_writes_nothing(home):
     selected, secrets = collect(home, search="local", brave_key_file=str(brave), decodo_key_file=str(decodo),
                                 env={"LOCAL_SEARCH_DATA_DIR": str(home / "data")})
     before = snapshot(home)
-    with pytest.raises(RuntimeError, match="different value"):
+    with pytest.raises(RuntimeError, match="Decodo token .*different value.*delete that file"):
         search.apply(selected, secrets, {})
     assert snapshot(home) == before
 
@@ -647,3 +647,71 @@ def test_pending_decodo_secret_rejected_for_existing_endpoint(home, compatible_i
     selected, _ = existing(home)
     with pytest.raises(RuntimeError, match="Invalid pending"):
         search.apply(selected, {"decodo_key": DECODO}, {})
+
+
+@pytest.mark.parametrize("mode", ["noninteractive", "kept"])
+def test_existing_decodo_is_validated_without_prompt(home, mode):
+    brave = private(home / "data/brave_key")
+    decodo = private(home / "data/decodo_key", DECODO)
+    env = {"LOCAL_SEARCH_DATA_DIR": str(brave.parent)}
+    if mode == "kept":
+        saved = {"kind": "local", "url": "http://127.0.0.1:8889/mcp", "data_dir": str(brave.parent), "port": 8889}
+        kwargs = dict(previous={"search": saved}, interactive=True, choose=lambda *_: "keep")
+    else:
+        kwargs = dict(search="local")
+    before = snapshot(home)
+    selected, secrets = collect(home, env=dict(env), **kwargs)
+    assert secrets == {} and snapshot(home) == before
+    decodo.chmod(0o644)
+    with pytest.raises(RuntimeError, match="Decodo token"):
+        collect(home, env=dict(env), **kwargs)
+
+
+def test_apply_rejects_broken_existing_decodo_before_any_write(home):
+    brave = private(home / "source/brave")
+    data = home / "data"
+    private(data / "decodo_key", DECODO)
+    selected, secrets = collect(home, search="local", brave_key_file=str(brave),
+                                env={"LOCAL_SEARCH_DATA_DIR": str(data)})
+    (data / "decodo_key").chmod(0o644)
+    before = snapshot(home)
+    with pytest.raises(RuntimeError, match="Decodo token"):
+        search.apply(selected, secrets, {})
+    assert snapshot(home) == before
+
+
+def test_symlinked_decodo_token_is_rejected_before_any_write(home):
+    brave = private(home / "source/brave")
+    data = home / "data"
+    data.mkdir(mode=0o700)
+    (data / "decodo_key").symlink_to(private(home / "elsewhere/token", DECODO))
+    with pytest.raises(RuntimeError, match="Decodo token .*symlink"):
+        collect(home, search="local", brave_key_file=str(brave), env={"LOCAL_SEARCH_DATA_DIR": str(data)})
+    assert not (data / "brave_key").exists()
+
+
+@pytest.mark.parametrize("source", ["same-flag", "existing-brave"])
+def test_decodo_token_must_not_reuse_brave_key(home, source):
+    brave = private(home / "source/brave")
+    if source == "same-flag":
+        with pytest.raises(RuntimeError, match="must not be the Brave"):
+            collect(home, search="local", brave_key_file=str(brave), decodo_key_file=str(brave))
+        return
+    data = home / "data"
+    private(data / "brave_key")
+    selected, secrets = collect(home, search="local", decodo_key_file=str(brave),
+                                env={"LOCAL_SEARCH_DATA_DIR": str(data)})
+    before = snapshot(home)
+    with pytest.raises(RuntimeError, match="must not be the Brave"):
+        search.apply(selected, secrets, {})
+    assert snapshot(home) == before
+
+
+def test_reapplying_same_decodo_token_is_idempotent(home):
+    brave = private(home / "source/brave")
+    decodo = private(home / "source/decodo", DECODO)
+    selected, secrets = collect(home, search="local", brave_key_file=str(brave), decodo_key_file=str(decodo))
+    search.apply(selected, secrets, {})
+    before = snapshot(home)
+    search.apply(selected, secrets, {})
+    assert snapshot(home) == before

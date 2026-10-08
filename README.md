@@ -374,8 +374,10 @@ loopback port. Local search also accepts an optional Decodo Web Scraping API
 token for its page-fetch fallback: `--decodo-key-file /absolute/private/decodo.key`
 (the value after `Basic` in Decodo's Playground `Authorization` header). `--guided`
 offers it as a skippable step (Skip is the default); without it, fetch recovery
-uses Jina Reader only. An existing Decodo token is always kept unchanged. Fresh local search uses `~/.local/share/pi-shared/search` for
-private service data, not a pre-created module checkout. Existing local settings
+uses Jina Reader only. An existing Decodo token is always kept unchanged; to
+replace it, delete `<search data>/decodo_key` and rerun setup. Fresh local search
+uses `~/.local/share/pi-shared/search` for private service data, not a
+pre-created module checkout. Existing local settings
 and credentials are preserved. `--with-search` remains a compatibility alias.
 `--search skip` leaves existing routing and services alone; it does not disable
 tools or uninstall a previously selected service.

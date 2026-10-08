@@ -26,8 +26,8 @@ import warnings
 
 BRAVE_SIGNUP = "https://api-dashboard.search.brave.com/"
 DECODO_NOTE = ("Optional: a Decodo Web Scraping API token lets local search recover pages that block "
-               "direct fetches. Use only the value after 'Basic' in the Playground Authorization header. "
-               "Without it, recovery falls back to Jina Reader.")
+               "direct fetches. Without it, recovery falls back to Jina Reader.")
+DECODO_QUESTION = "Decodo fetch fallback (optional; token = value after 'Basic' in its Playground Authorization header):"
 _PROBE_TIMEOUT = 10
 _PROBE_FAILURE = "Search tools/list could not connect or read a response; check endpoint, TLS and reachability"
 
@@ -105,6 +105,14 @@ def _input(prompt):
     if value.lower() == "cancel":
         raise KeyboardInterrupt
     return value
+
+
+def _decodo(path, action):
+    """Run a Decodo credential check, naming the file and how to rotate it."""
+    try:
+        return action()
+    except RuntimeError as exc:
+        raise RuntimeError(f"Decodo token {path}: {exc}. To replace it, delete that file and rerun setup.") from None
 
 
 def _choose(choose, question, choices):
@@ -324,14 +332,17 @@ def collect(args, previous, env, code_root, interactive, choose):
             source = _path(decodo_arg)
             if not plan:
                 secrets["decodo_key"] = _secret(_read_file(source))
-        elif interactive and not kept:
-            _safe_path(decodo)
+        elif not plan:
+            # Validate an existing token on every path so a broken file fails
+            # before approval instead of inside the component installer.
+            _decodo(decodo, lambda: _safe_path(decodo))
             if decodo.exists():
-                _secret(_read_file(decodo))
-                print("Decodo fetch fallback: keeping the existing private token.")
-            else:
+                _decodo(decodo, lambda: _secret(_read_file(decodo)))
+                if interactive and not kept:
+                    print("Decodo fetch fallback: keeping the existing private token.")
+            elif interactive and not kept:
                 print(DECODO_NOTE)
-                method = _choose(choose, "Decodo fetch fallback (optional):", {
+                method = _choose(choose, DECODO_QUESTION, {
                     "skip": "Skip Decodo (recommended if you have no token)",
                     "file": "Import a private Decodo token file",
                     "hidden": "Enter a Decodo token using hidden input"})
@@ -339,6 +350,8 @@ def collect(args, previous, env, code_root, interactive, choose):
                     secrets["decodo_key"] = _secret(_read_file(_path(_input("Absolute private Decodo token file (or cancel): "))))
                 elif method == "hidden":
                     secrets["decodo_key"] = _hidden("Decodo token (hidden, or cancel): ")
+        if "decodo_key" in secrets and secrets["decodo_key"] == secrets.get("brave_key"):
+            raise RuntimeError("The Decodo token must not be the Brave API key")
         env.update(LOCAL_SEARCH_DATA_DIR=str(data), MCP_PORT=str(port))
     validate_saved(selection)
     return selection, secrets
@@ -546,9 +559,14 @@ def apply(selection, secrets, env):
             _key_preflight(key, value)
         decodo = data / "decodo_key"
         decodo_value = pending.get("decodo_key")
+        _decodo(decodo, lambda: _safe_path(decodo))
+        if decodo_value is not None or decodo.exists():
+            _decodo(decodo, lambda: _key_preflight(decodo, decodo_value))
         if decodo_value is not None:
-            _safe_path(decodo)
-            _key_preflight(decodo, decodo_value)
+            brave = value if value is not None else _secret(_read_file(key)) if key.exists() else None
+            if decodo_value == brave:
+                # The broker would otherwise send the Brave key to Decodo.
+                raise RuntimeError("The Decodo token must not be the Brave API key")
     elif "key_file" in selection:
         key = _path(selection["key_file"])
         value = pending.get("search_key")

@@ -456,6 +456,10 @@ def setup(args):
             print(f"  Authenticated catalog read: GET {urllib.parse.urlsplit(gateway['url']).path}/v1/models/canonical; no inference requests.")
             print("  No local gateway or oMLX service installed; no remote service operations or credential provisioning.")
         search_setup.describe(args.search_selection)
+        if args.search_selection["kind"] == "local" and (
+                getattr(args, "decodo_key_file", None) or "decodo_key" in args.search_secrets):
+            print(f"  Decodo token: provision {args.search_selection['data_dir']}/decodo_key if absent "
+                  "(contents never shown; an existing different token is never overwritten)")
         overrides = [name for name in ("PI_WEBSEARCH_MCP_URL", "SEARCH_MCP_URL", "WEBSEARCH_MCP_URL",
                                        "PI_WEBSEARCH_MCP_API_KEY", "SEARCH_MCP_API_KEY") if env.get(name)]
         if overrides and args.search_selection["kind"] != "skip":
@@ -890,7 +894,7 @@ Provider login, gateway onboarding and model downloads are separate steps.
 After setup: pi (use /login and /model); pi models lists configured routes.
 Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.30")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.31")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
     commands.add_parser("peekaboo", help="Standalone opt-in native macOS CLI: plan, status, apply, check")
     commands.add_parser("capability", help="Bounded /setup capability plans, missing-only scaffolds and explicit checks")

@@ -24,7 +24,11 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.30** retains stock Pi **0.99.1** and adds explicit, profile-scoped
+Package **0.1.31** keeps stock Pi **0.99.1** and adds an optional Decodo page-fetch
+fallback token to local search setup: `--decodo-key-file`, or a skippable
+`--guided` step. Existing tokens are validated and kept; updates never prompt.
+
+Package 0.1.30 retains stock Pi **0.99.1** and adds explicit, profile-scoped
 [official MCP migration](mcp.md), native MCP onboarding and native-by-default
 Peekaboo setup. Updates do not automatically migrate MCP or remove the adapter;
 preview and approve migration separately, then restart affected profiles.
