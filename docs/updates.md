@@ -24,7 +24,13 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.32** keeps stock Pi **0.99.1** and adds `--search own` (also offered by
+Package **0.1.33** keeps stock Pi **0.99.1**. `pi-shared update` now retires a leftover
+`pi-mcp-adapter` selection (or `-builtin:mcp`) in the saved profile so Pi's built-in
+`/mcp` loads: it applies the backed-up [MCP migration](mcp.md#managed-updates) when it is
+unambiguous and otherwise leaves the profile unchanged and prints why. An adapter with no
+configured servers now migrates settings alone.
+
+Package 0.1.32 keeps stock Pi **0.99.1** and adds `--search own` (also offered by
 `--guided`): it sets `webSearchEnabled: false` so pi-shared registers no `web_search`,
 `web_fetch` or `deep_research` and your own search tools can provide them. It needs the
 matching pi-shared module (`pi-shared update` refreshes it). Receipts saved with `own`
@@ -36,7 +42,7 @@ fallback token to local search setup: `--decodo-key-file`, or a skippable
 
 Package 0.1.30 retains stock Pi **0.99.1** and adds explicit, profile-scoped
 [official MCP migration](mcp.md), native MCP onboarding and native-by-default
-Peekaboo setup. Updates do not automatically migrate MCP or remove the adapter;
+Peekaboo setup. Updates did not migrate MCP before 0.1.33;
 preview and approve migration separately, then restart affected profiles.
 
 Package 0.1.29 moves to stock Pi **0.99.1**, the newest release available through
