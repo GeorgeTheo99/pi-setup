@@ -220,7 +220,7 @@ def collect(args, previous, env, code_root, interactive, choose):
     if kind is None and interactive:
         choices = {"local": "Install local Brave search", "existing": "Connect an existing MCP endpoint",
                    "own": "Use my own search tools (turn off pi-shared web_search/web_fetch/deep_research)",
-                   "skip": "No new search provisioning (existing tools/config stay enabled)"}
+                   "skip": "No new search provisioning (existing search configuration is left as-is)"}
         if saved:
             choices = {"keep": "Keep saved search selection", **choices}
         kind = _choose(choose, "Web search and page retrieval:", choices)

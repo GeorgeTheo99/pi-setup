@@ -743,3 +743,13 @@ def test_own_rejects_endpoint_and_key_options(home):
         collect(home, search="own", brave_key_file=str(home / "k"))
     with pytest.raises(RuntimeError, match="Invalid saved search selection"):
         search.validate_saved({"kind": "own", "url": "https://search.example/mcp"})
+
+
+def test_own_without_config_and_interactive_keep(home):
+    selection, secrets = collect(home, interactive=True, choose=lambda _title, choices: "own")
+    assert selection == {"kind": "own", "url": None}
+    search.apply(selection, secrets, {})
+    config = home / ".pi/research/config.json"
+    assert json.loads(config.read_text()) == {"webSearchEnabled": False}
+    kept, _ = collect(home, previous={"search": selection}, interactive=True, choose=lambda _title, choices: "keep")
+    assert kept == selection
