@@ -737,6 +737,36 @@ def update_lock():
         os.close(fd)
 
 
+def migrate_mcp(agent_dir, dry_run):
+    """Retire a leftover pi-mcp-adapter selection so Pi's built-in /mcp loads."""
+    import capability_setup
+    import mcp_setup
+    report = capability_setup.result("mcp", "apply")
+    value = lambda label: next((row["value"] for row in report["evidence"] if row["label"] == label), None)
+    try:
+        if not mcp_setup.update_profile(Path(agent_dir), report, dry_run):
+            return
+    except Exception as exc:  # Advisory step: never leave the verified update unrecorded.
+        reason = (str(exc) if isinstance(exc, mcp_setup.SetupError) else
+                  f"cannot safely read or write the profile files ({type(exc).__name__})" if isinstance(exc, OSError) else
+                  f"unexpected error ({type(exc).__name__})")
+        backup = value("Rollback backup directory")
+        if value("Profile writes started"):
+            print(f"  MCP: migration of {agent_dir} may be PARTIALLY applied: {reason}")
+            print(f"  MCP: check the rollback manifest in {backup}; restore changed files whose hashes still match before retrying or using /setup mcp.")
+        else:
+            print(f"  MCP: legacy adapter migration {'will be refused' if dry_run else 'NOT applied'} for {agent_dir}: {reason}")
+            print("  MCP: Pi's built-in /mcp stays inactive in that profile until this is resolved; then rerun pi-shared update or use /setup mcp.")
+        return
+    servers = value("Servers to migrate")
+    if dry_run:
+        print(f"  Migrate {agent_dir} from legacy pi-mcp-adapter to Pi's built-in MCP ({servers} server(s)); private backups, no npm uninstall.")
+    else:
+        print(f"  MCP: migrated {agent_dir} to Pi's built-in MCP ({servers} server(s)); backups in {value('Rollback backup directory')}. Restart Pi sessions.")
+    for warning in dict.fromkeys(report["warnings"]):
+        print(f"    - {warning}")
+
+
 def update(args):
     data = read_state(allow_incomplete=True)
     if data["version"] != 2:
@@ -756,6 +786,7 @@ def update(args):
         print("  Also update owned Homebrew oMLX; restart it only if its installed version changes.")
     print("  Update owned CLI/runtime; apply changed selected services; refresh dependencies/shortcuts; verify.")
     print("  No LLM model downloads or provider calls. Affected services may restart; failed steps are not rolled back.")
+    migrate_mcp(data["agent_dir"], dry_run=True)
     if args.plan:
         return 0
     if platform.system() != "Darwin":
@@ -845,6 +876,7 @@ def update(args):
             direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
         if data.get("external_gateway"):
             run(existing_gateway.command(data, "check"), env=env)
+        migrate_mcp(data["agent_dir"], dry_run=False)
         data["runtime_versions"] = update_support.runtime_versions()
         data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])
         data["services"] = update_support.service_snapshot(data["modules"], data["settings"], data.get("omlx"))

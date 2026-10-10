@@ -257,3 +257,72 @@ def test_wrong_homebrew_ownership_cannot_upgrade_another_installation(saved, mon
     with pytest.raises(RuntimeError, match="different installation"):
         cli.update(args(modules_only=False))
     assert not saved[1]
+
+
+def adapter_profile(saved):
+    home, _, data = saved
+    agent = Path(data["agent_dir"]).resolve()
+    agent.mkdir(mode=0o700)
+    data["agent_dir"] = str(agent)
+    cli.write_state(data)
+    (agent / "settings.json").write_text(json.dumps({"packages": ["npm:pi-shared", "npm:pi-mcp-adapter@2.0.0"]}))
+    return agent
+
+
+def test_update_migrates_leftover_mcp_adapter_after_modules(saved, capsys):
+    agent = adapter_profile(saved)
+    assert cli.update(args(plan=True)) == 0
+    assert "Migrate " + str(agent) in capsys.readouterr().out
+    assert "+builtin:mcp" not in (agent / "settings.json").read_text()
+    assert cli.update(args()) == 0
+    assert "MCP: migrated" in capsys.readouterr().out
+    settings = json.loads((agent / "settings.json").read_bytes())
+    assert settings["extensions"] == ["+builtin:mcp"] and settings["packages"][0] == "npm:pi-shared"
+    assert not (agent / "mcp.json").exists()
+
+
+def test_update_reports_refused_mcp_migration_but_completes(saved, capsys):
+    agent = adapter_profile(saved)
+    source = Path.home() / ".config/mcp/mcp.json"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(json.dumps({"mcpServers": {"x": {"command": "x"}}}))
+    (agent / "mcp.json").write_text("{}")
+    before = (agent / "settings.json").read_bytes()
+    assert cli.update(args()) == 0
+    assert "MCP: legacy adapter migration NOT applied" in capsys.readouterr().out
+    assert (agent / "settings.json").read_bytes() == before
+    assert cli.read_state()["status"] == "module-checks-passed"
+
+
+def test_update_reports_partial_mcp_migration_and_unexpected_errors(saved, capsys, monkeypatch):
+    agent = adapter_profile(saved)
+    def interrupted(path, data, expected):
+        raise OSError("disk full")
+    monkeypatch.setattr(cli_mcp(), "replace_file", interrupted)
+    (agent / "settings.json").write_text(json.dumps({"packages": ["npm:pi-mcp-adapter"]}))
+    assert cli.update(args()) == 0
+    out = capsys.readouterr().out
+    assert "PARTIALLY applied" in out and "(OSError)" in out and ".mcp-migration" in out
+    assert cli.read_state()["status"] == "module-checks-passed"
+    monkeypatch.setattr(cli_mcp(), "update_profile", lambda *a: {}["boom"])
+    assert cli.update(args()) == 0
+    assert "NOT applied" in capsys.readouterr().out and cli.read_state()["status"] == "module-checks-passed"
+
+
+def test_update_prints_migration_warnings(saved, capsys):
+    agent = adapter_profile(saved)
+    source = Path.home() / ".config/mcp/mcp.json"
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(json.dumps({"mcpServers": {"x": {"command": "x"}}}))
+    assert cli.update(args(plan=True)) == 0
+    out = capsys.readouterr().out
+    assert "(1 server(s))" in out and "    - Native MCP connects enabled servers at session startup" in out
+    assert cli.update(args()) == 0
+    out = capsys.readouterr().out
+    assert "MCP: migrated" in out and "Private backups contain credentials" in out
+    assert set(json.loads((agent / "mcp.json").read_bytes())["mcpServers"]) == {"x"}
+
+
+def cli_mcp():
+    import mcp_setup
+    return mcp_setup

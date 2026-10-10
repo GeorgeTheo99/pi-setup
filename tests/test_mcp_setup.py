@@ -319,3 +319,126 @@ def test_peekaboo_legacy_not_silently_switched(fixture):
     assert "Legacy adapter" in " ".join(report["warnings"])
     report, code = p.operate(pb_args(fixture, backend="native"), lock)
     assert code == 1 and "migration" in " ".join(report["errors"])
+
+
+def native_profile(settings):
+    return settings["extensions"][-1] == "+builtin:mcp" and all(
+        item[key] == [] for item in settings["packages"] if isinstance(item, dict) and "pi-mcp-adapter" in item["source"]
+        for key in m.ADAPTER_RESOURCES)
+
+
+def test_missing_adapter_source_migrates_settings_only(fixture):
+    f = fixture
+    f.source.unlink()
+    report, code = approve(f)
+    assert code == 0, report
+    assert not (f.agent / "mcp.json").exists()
+    assert native_profile(json.loads((f.agent / "settings.json").read_bytes()))
+    manifest = json.loads(next((f.agent / ".mcp-migration").glob("*/manifest.json")).read_bytes())
+    assert [Path(r["path"]).name for r in manifest["files"] if r["changed"]] == ["settings.json"]
+
+
+@pytest.mark.parametrize("source", ['{"mcpServers":{}}', "{}"])
+def test_serverless_source_keeps_existing_native_target(fixture, source):
+    f = fixture
+    f.source.write_text(source)
+    (f.agent / "mcp.json").write_text('{"mcpServers":{"kept":{"command":"x"}}}')
+    report = c.result("mcp", "apply")
+    assert m.update_profile(f.agent, report) is True
+    assert (f.agent / "mcp.json").read_text() == '{"mcpServers":{"kept":{"command":"x"}}}'
+    assert native_profile(json.loads((f.agent / "settings.json").read_bytes()))
+    assert f.source.read_text() == source
+
+
+def test_update_profile_migrates_servers_once_and_dry_run_writes_nothing(fixture):
+    f = fixture
+    before = {str(p): p.read_bytes() for p in f.home.parent.rglob("*") if p.is_file()}
+    assert m.update_profile(f.agent, c.result("mcp", "apply"), dry_run=True) is True
+    assert before == {str(p): p.read_bytes() for p in f.home.parent.rglob("*") if p.is_file()}
+    report = c.result("mcp", "apply")
+    assert m.update_profile(f.agent, report) is True
+    assert {"label": "Servers to migrate", "value": "3"} in report["evidence"]
+    assert set(json.loads((f.agent / "mcp.json").read_bytes())["mcpServers"]) == {"peekaboo", "docs", "disabled"}
+    settings = (f.agent / "settings.json").read_bytes()
+    assert m.update_profile(f.agent, c.result("mcp", "apply")) is False
+    assert (f.agent / "settings.json").read_bytes() == settings
+    assert len(list((f.agent / ".mcp-migration").iterdir())) == 1
+
+
+def test_update_profile_ignores_project_scope_but_refuses_conflicts_without_writes(fixture):
+    f = fixture
+    (f.agent / "mcp.json").write_text('{"mcpServers":{}}')
+    settings = (f.agent / "settings.json").read_bytes()
+    with pytest.raises(p.SetupError, match="Native target already exists"):
+        m.update_profile(f.agent, c.result("mcp", "apply"))
+    for source in ('{"imports":["claude-code"]}', '{"settings":{"agentPluginPaths":["/x"]}}',
+                   '{"settings":{"hostConfigDiscovery":"on"}}'):
+        f.source.write_text(source)
+        with pytest.raises(p.SetupError, match="manual migration|discovery must be off"):
+            m.update_profile(f.agent, c.result("mcp", "apply"))
+    f.source.unlink()
+    for target in ('{"imports":["claude-code"]}', '{"mcpServers":{"x":{"command":"x","disabled":true}}}'):
+        (f.agent / "mcp.json").write_text(target)
+        with pytest.raises(p.SetupError, match="Native target already exists"):
+            m.update_profile(f.agent, c.result("mcp", "apply"))
+        _, code = run(f)
+        assert code == 1
+    assert (f.agent / "settings.json").read_bytes() == settings
+    assert not (f.agent / ".mcp-migration").exists()
+
+
+def test_update_profile_noop_for_native_or_missing_profile(fixture):
+    f = fixture
+    (f.agent / "settings.json").write_text('{"extensions":["+builtin:mcp"],"packages":[{"source":"npm:pi-mcp-adapter","extensions":[],"skills":[],"prompts":[],"themes":[]}]}')
+    assert m.update_profile(f.agent, c.result("mcp", "apply")) is False
+    assert m.update_profile(f.home / "absent", c.result("mcp", "apply")) is False
+
+
+def test_explicit_serverless_migration_keeps_native_target(fixture):
+    f = fixture
+    f.source.unlink()
+    (f.agent / "mcp.json").write_text('{"autoEnableCodemode":true,"mcpServers":{"n":{"url":"https://x.invalid/mcp","enabled":false}}}')
+    report, code = approve(f)
+    assert code == 0, report
+    assert json.loads((f.agent / "mcp.json").read_bytes())["mcpServers"]["n"]["enabled"] is False
+    assert native_profile(json.loads((f.agent / "settings.json").read_bytes()))
+
+
+def test_disabled_builtin_without_adapter_never_imports_shared_servers(fixture):
+    f = fixture
+    (f.agent / "settings.json").write_text('{"extensions":["-builtin:mcp"]}')
+    report = c.result("mcp", "apply")
+    assert m.update_profile(f.agent, report) is True
+    assert {"label": "Servers to migrate", "value": "0"} in report["evidence"]
+    assert not (f.agent / "mcp.json").exists()
+    assert json.loads((f.agent / "settings.json").read_bytes())["extensions"] == ["+builtin:mcp"]
+
+
+def test_failed_attempt_before_writes_does_not_block_retry(fixture, monkeypatch):
+    f = fixture
+    f.source.unlink()
+    real = c.exclusive_file
+    calls = []
+    def flaky(path, data):
+        calls.append(path)
+        if len(calls) == 1:
+            raise OSError("backup disk full")
+        real(path, data)
+    monkeypatch.setattr(c, "exclusive_file", flaky)
+    report = c.result("mcp", "apply")
+    with pytest.raises(OSError):
+        m.update_profile(f.agent, report)
+    assert not any(row["label"] == "Profile writes started" for row in report["evidence"])
+    assert m.update_profile(f.agent, c.result("mcp", "apply")) is True
+    assert native_profile(json.loads((f.agent / "settings.json").read_bytes()))
+
+
+def test_explicit_missing_source_and_incompatible_native_values_refused(fixture):
+    f = fixture
+    report, code = run(f, opts={"mode": "migrate", "sourceConfig": str(f.home / "typo.json")})
+    assert code == 1 and "missing" in " ".join(report["errors"])
+    f.source.unlink()
+    for server in ({"command": "~/bin/x"}, {"command": "x", "env": {"K": "$TOKEN"}}, {"url": "https://x.invalid/${HOST}"}):
+        (f.agent / "mcp.json").write_text(json.dumps({"mcpServers": {"s": server}}))
+        with pytest.raises(p.SetupError, match="Native target already exists"):
+            m.update_profile(f.agent, c.result("mcp", "apply"))

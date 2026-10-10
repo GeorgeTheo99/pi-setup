@@ -33,15 +33,17 @@ pi-shared capability mcp check --json ...
 `...` above means the four identical context arguments, not a literal CLI option.
 An alternative absolute source may be supplied as
 `{"mode":"migrate","sourceConfig":"/absolute/source/mcp.json"}`. Repeat identical
-options for plan and apply. Source contents, original settings, target absence,
+options for plan and apply. Source contents, original settings, target state,
 relevant override files, proposed bytes and path ancestry bind the approval digest.
 Changes invalidate approval, including changes detected under the shared update
 lock. Apply requires both `--yes` and the exact `planId`; there is no default consent.
 No release, install, global npm uninstall, or other profile mutation occurs.
 
-Migration creates **only a missing** `<agent-dir>/mcp.json`. Existing native files,
+Migration creates **only a missing** `<agent-dir>/mcp.json`. Existing files,
 including adapter profile overrides, are never replaced or merged automatically.
-A conflicting target, additional shared/project MCP config layer, project adapter
+When the adapter source has no servers, only settings change: an existing target is
+kept only if it uses native keys alone, otherwise migration refuses. A conflicting
+target, additional shared/project MCP config layer, project adapter
 selection or project `-builtin:mcp` produces a safe refusal. Review those scopes
 and restrictions manually rather than deleting them merely to bypass the guard.
 Unknown adapter policy, imports, plugin/socket/auth fields and enabled approvals also refuse
@@ -62,6 +64,29 @@ No package files are deleted. Other profiles still using the shared adapter sour
 are unaffected. Auto-discovered, renamed, custom, CLI-loaded, and package-provided
 extensions are **not audited**; project/CLI overrides can still replace native MCP.
 Review these separately. Native inventory is not proof of current-session loading.
+
+## Managed updates
+
+`pi-shared update` (0.1.33+) checks the saved profile after its modules verify. When
+that profile still enables `pi-mcp-adapter` or sets `-builtin:mcp`, the update applies
+the same migration under its update lock, using `~/.config/mcp/mcp.json` as the source:
+
+- **No adapter servers** (missing source, or no `mcpServers`): settings change only;
+  no `mcp.json` is created and any existing native file is kept.
+- **Adapter servers and no native `mcp.json`:** full conversion as above.
+- **Anything ambiguous** (existing native target plus adapter servers, extra adapter
+  layers, imports/host discovery, untranslatable policy): nothing is written; the
+  update completes and prints the reason. Resolve it, then rerun the update or use
+  `/setup mcp`. An interrupted write is reported as partial with its rollback manifest.
+
+The update prints the same compatibility warnings the explicit plan shows. Because a
+profile `-builtin:mcp` alone also triggers migration, updates re-enable built-in MCP
+there (settings only; shared adapter servers are not imported); use `pi config` to
+opt out again afterwards if that was deliberate.
+
+`pi-shared update --plan` previews the outcome. Project settings are not inspected or
+changed by updates. Backups and rollback are identical to explicit migration. Restart
+Pi sessions afterwards.
 
 ## Conversion and conservative restrictions
 

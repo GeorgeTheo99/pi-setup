@@ -19,6 +19,9 @@ LIMIT = 1024 * 1024
 ADAPTER = re.compile(r"npm:pi-mcp-adapter(?:@[^\s/]+)?\Z")
 ADAPTER_RESOURCES = ("extensions", "skills", "prompts", "themes")
 DISABLED_POLICIES = {"approveTools", "sampling", "elicitation", "autoAuth", "scriptMode"}
+NATIVE_KEYS = {"mcpServers", "autoEnableCodemode"}
+NATIVE_SERVER_KEYS = {"type", "command", "args", "env", "cwd", "url", "headers", "oauth",
+                      "timeout", "enabled", "exposure", "toolExposure"}
 # Only the adapter's own entry points, not arbitrary similarly named extensions.
 ADAPTER_PATH = re.compile(r"(?:^|/)pi-mcp-adapter(?:\.[cm]?[jt]s|/(?:index\.[cm]?[jt]s|dist/index\.js))?\Z")
 
@@ -143,7 +146,8 @@ def compatible_value(key, value):
     return "${" not in value and not value.startswith("!")
 
 
-def translate(document):
+def adapter_defaults(document):
+    """Validate adapter top-level policy; anything that could add servers is refused."""
     if set(document) - {"mcpServers", "settings"}:
         raise SetupError("Adapter imports or unknown top-level MCP settings require manual migration; source remains untouched.")
     defaults = document.get("settings", {})
@@ -155,6 +159,27 @@ def translate(document):
         raise SetupError("Host config discovery must be off before migration; imported servers cannot be silently lost.")
     if defaults.get("toolPrefix", "server") not in {"server", "short", "none", "mcp"}:
         raise SetupError("Unsupported adapter tool prefix.")
+    return defaults
+
+
+def native_document(document):
+    """True only when Pi's native loader reads the file as the adapter did."""
+    servers = document.get("mcpServers", {})
+    if set(document) - NATIVE_KEYS or not isinstance(servers, dict):
+        return False
+    for server in servers.values():
+        if not isinstance(server, dict) or set(server) - NATIVE_SERVER_KEYS:
+            return False
+        for key in {"command", "args", "env", "cwd", "url", "headers"} & server.keys():
+            value = server[key]
+            values = value if isinstance(value, list) else list(value.values()) if isinstance(value, dict) else [value]
+            if any(not isinstance(v, str) or not compatible_value(key, v) for v in values):
+                return False
+    return True
+
+
+def translate(document):
+    defaults = adapter_defaults(document)
     servers = document.get("mcpServers")
     if not isinstance(servers, dict) or not servers or len(servers) > 128:
         raise SetupError("Migration needs a nonempty bounded mcpServers object.")
@@ -212,8 +237,8 @@ def inspect(paths, opts, report, selection):
     from capability_setup import evidence, file_state, handoff
     agent = paths["agent_dir"]
     settings_path, target = agent / "settings.json", agent / "mcp.json"
-    settings, raw_settings, _ = object_file(settings_path)
-    updated, adapters = native_settings(settings)
+    settings, _, _ = object_file(settings_path)
+    _, adapters = native_settings(settings)
     native, raw_native, _ = object_file(target)
     if not isinstance(native.get("mcpServers", {}), dict):
         raise SetupError("Native mcpServers must be an object.")
@@ -228,41 +253,97 @@ def inspect(paths, opts, report, selection):
     if opts["mode"] != "migrate":
         report["nextSteps"].append("Use mode migrate to preview adapter conversion, or add new servers with pi mcp add in this profile. No adapter installation is needed on Pi 0.99.1.")
         return
-    if raw_native is not None:
-        raise SetupError("Native target already exists (possibly adapter overrides); migration never overwrites it. Review/merge it manually, including disabled flags and restrictions, before choosing a fresh target profile.")
     source = path_value(opts.get("sourceConfig", str(Path.home() / ".config/mcp/mcp.json")))
-    if source in {target, settings_path} or source.is_relative_to(agent / ".mcp-migration"):
-        raise SetupError("Migration source must be separate from profile targets/backups.")
-    document, raw_source, _ = object_file(source)
-    if raw_source is None:
+    if "sourceConfig" in opts and object_file(source)[1] is None:
         raise SetupError("Adapter source configuration is missing.")
-    selection["mcpStates"][str(source)] = file_state(source)[1]
-    # Additional automatic adapter layers could hide a disable/restriction. Do not
-    # infer effective config from only one layer or change a project implicitly.
-    for other in (Path.home() / ".config/mcp/mcp.json", Path.home() / ".agents/mcp.json", Path.home() / ".agents/mcp/mcp.json",
-                  paths["project"] / ".mcp.json", paths["project"] / ".pi/mcp.json"):
-        if other == source:
-            continue
-        raw, state = file_state(other)
-        selection["mcpStates"][str(other)] = state
-        if raw is not None:
-            raise SetupError("Additional shared/project MCP layers exist; review their overrides manually before a single-source migration.")
-    project_settings, _, _ = object_file(paths["project"] / ".pi/settings.json")
-    _, project_adapters = native_settings(project_settings)
-    selection["mcpStates"][str(paths["project"] / ".pi/settings.json")] = file_state(paths["project"] / ".pi/settings.json")[1]
-    if project_adapters or "-builtin:mcp" in project_settings.get("extensions", []):
-        raise SetupError("Project settings still select the adapter or disable native MCP; resolve that scope separately.")
-    converted, warnings = translate(document)
-    selection["files"] = {str(target): payload(converted), str(settings_path): payload(updated)}
+    plan_migration(agent, source, paths["project"], selection, report)
+    report["nextSteps"].append("Stop affected Pi sessions before apply. After apply restart Pi 0.99.1, use /mcp, then separately approve pi mcp list and any OAuth login. Rollback instructions and hashes are in the private backup manifest.")
+
+
+def plan_migration(agent, source, project, selection, report):
+    """Fill selection with the profile migration; raise SetupError on any conflict.
+
+    An adapter source without servers needs only the settings change, so a
+    missing or empty source migrates settings alone and never creates mcp.json.
+    A None source skips adapter configuration entirely (no adapter selected).
+    """
+    from capability_setup import evidence, file_state
+    settings_path, target = agent / "settings.json", agent / "mcp.json"
+    settings, raw_settings, _ = object_file(settings_path)
+    updated, _ = native_settings(settings)
+    native, raw_native, _ = object_file(target)
+    selection.setdefault("mcpStates", {}).update({str(p): file_state(p)[1] for p in (settings_path, target)})
+    document, raw_source = {}, None
+    if source is not None:
+        if source in {target, settings_path} or source.is_relative_to(agent / ".mcp-migration"):
+            raise SetupError("Migration source must be separate from profile targets/backups.")
+        document, raw_source, _ = object_file(source)
+        selection["mcpStates"][str(source)] = file_state(source)[1]
+        # Additional automatic adapter layers could hide a disable/restriction. Do not
+        # infer effective config from only one layer or change a project implicitly.
+        layers = [Path.home() / ".config/mcp/mcp.json", Path.home() / ".agents/mcp.json", Path.home() / ".agents/mcp/mcp.json"]
+        if project is not None:
+            layers += [project / ".mcp.json", project / ".pi/mcp.json"]
+        for other in layers:
+            if other == source:
+                continue
+            raw, state = file_state(other)
+            selection["mcpStates"][str(other)] = state
+            if raw is not None:
+                raise SetupError("Additional shared/project MCP layers exist; review their overrides manually before a single-source migration.")
+    if project is not None:
+        project_settings, _, _ = object_file(project / ".pi/settings.json")
+        _, project_adapters = native_settings(project_settings)
+        selection["mcpStates"][str(project / ".pi/settings.json")] = file_state(project / ".pi/settings.json")[1]
+        if project_adapters or "-builtin:mcp" in project_settings.get("extensions", []):
+            raise SetupError("Project settings still select the adapter or disable native MCP; resolve that scope separately.")
+    servers = document.get("mcpServers")
+    # The adapter also reads and writes <agent>/mcp.json as an override layer. Keep
+    # an existing file only when nothing must be converted and it is provably native.
+    if raw_native is not None and (servers or not native_document(native)):
+        raise SetupError("Native target already exists (possibly adapter overrides); migration never overwrites it. Review/merge it manually, including disabled flags and restrictions, before choosing a fresh target profile.")
+    if servers:
+        converted, warnings = translate(document)
+    else:
+        adapter_defaults(document)
+        converted, warnings = None, []
+    selection["files"] = {str(settings_path): payload(updated)}
     # Hex keeps the existing plan serializer deterministic without printing secrets.
-    selection["mcpOriginals"] = {str(source): raw_source.hex(), str(settings_path): raw_settings.hex() if raw_settings is not None else None, str(target): None}
+    selection["mcpOriginals"] = {str(settings_path): raw_settings.hex() if raw_settings is not None else None}
+    if raw_source is not None:
+        selection["mcpOriginals"][str(source)] = raw_source.hex()
+    if converted is not None:
+        selection["files"][str(target)] = payload(converted)
+        selection["mcpOriginals"][str(target)] = None
+        report["actions"].append("Create only the missing profile mcp.json; preserve the adapter source byte-for-byte, including credentials and Peekaboo's disabled-browser environment.")
     report["warnings"].extend(warnings)
     report["actions"].extend([
-        "Create only the missing profile mcp.json; preserve the adapter source byte-for-byte, including credentials and Peekaboo's disabled-browser environment.",
         "In this profile only: disable adapter package extensions/skills/prompts/themes, exclude explicit adapter entry paths, and enable +builtin:mcp; preserve unrelated settings and package pins. No npm uninstall.",
         "Before writing: save private exact source/settings backups and before/after SHA256 rollback evidence under AGENT/.mcp-migration/PLAN. Never print configuration values."])
-    evidence(report, "Servers to migrate", str(len(converted["mcpServers"])))
-    report["nextSteps"].append("Stop affected Pi sessions before apply. After apply restart Pi 0.99.1, use /mcp, then separately approve pi mcp list and any OAuth login. Rollback instructions and hashes are in the private backup manifest.")
+    evidence(report, "Servers to migrate", str(len(converted["mcpServers"]) if converted else 0))
+
+
+def update_profile(agent, report, dry_run=False):
+    """Managed-update migration of one profile under the caller's update lock.
+
+    Project scopes are not inspected: an update has no project, and project
+    settings remain the user's to resolve. Returns False when nothing is needed.
+    """
+    settings, _, _ = object_file(agent / "settings.json")
+    _, adapters = native_settings(settings)
+    if not adapters and "-builtin:mcp" not in settings.get("extensions", []):
+        return False
+    selection = {"schemaVersion": 1, "component": "mcp", "context": {"agent_dir": str(agent)}, "files": {}}
+    # Without a selected adapter only re-enable built-in MCP; never import servers
+    # from the shared path that other MCP clients also use.
+    source = Path.home() / ".config/mcp/mcp.json" if adapters else None
+    plan_migration(agent, source, None, selection, report)
+    if not dry_run:
+        digestable = {**selection, "files": {k: v.hex() for k, v in selection["files"].items()}}
+        # Unique per attempt: a failed attempt's backup directory never blocks a retry.
+        plan_id = hashlib.sha256(json.dumps(digestable, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:48] + uuid.uuid4().hex[:16]
+        apply(selection, plan_id, report)
+    return True
 
 
 def replace_file(path, data, expected):
@@ -315,8 +396,10 @@ def apply(selection, plan_id, report):
     report["warnings"].append("Private backups contain credentials. Multi-file migration is not atomic: on interruption, inspect manifest hashes and restore only matching changed files; never overwrite later edits. Stop sessions and do not edit files during apply.")
     # Native file first: the still-enabled adapter cannot accidentally lose its
     # profile settings if creation fails. Every original already has a backup.
+    evidence(report, "Profile writes started", "yes")
     target = agent / "mcp.json"
-    exclusive_file(target, selection["files"][str(target)])
+    if str(target) in selection["files"]:
+        exclusive_file(target, selection["files"][str(target)])
     settings = agent / "settings.json"
     state = selection["mcpStates"][str(settings)]["file"]
     if state is None:
