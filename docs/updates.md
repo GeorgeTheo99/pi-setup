@@ -24,7 +24,13 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.31** keeps stock Pi **0.99.1** and adds an optional Decodo page-fetch
+Package **0.1.32** keeps stock Pi **0.99.1** and adds `--search own` (also offered by
+`--guided`): it sets `webSearchEnabled: false` so pi-shared registers no `web_search`,
+`web_fetch` or `deep_research` and your own search tools can provide them. It needs the
+matching pi-shared module (`pi-shared update` refreshes it). Receipts saved with `own`
+are not readable by older packages.
+
+Package 0.1.31 keeps stock Pi **0.99.1** and adds an optional Decodo page-fetch
 fallback token to local search setup: `--decodo-key-file`, or a skippable
 `--guided` step. Existing tokens are validated and kept; updates never prompt.
 
