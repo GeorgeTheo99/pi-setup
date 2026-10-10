@@ -380,7 +380,11 @@ uses `~/.local/share/pi-shared/search` for private service data, not a
 pre-created module checkout. Existing local settings
 and credentials are preserved. `--with-search` remains a compatibility alias.
 `--search skip` leaves existing routing and services alone; it does not disable
-tools or uninstall a previously selected service.
+tools or uninstall a previously selected service. `--search own` sets
+`webSearchEnabled: false` in `~/.pi/research/config.json` so pi-shared registers no
+`web_search`, `web_fetch` or `deep_research` and your own search extension can provide
+them; endpoints and services are left unchanged, and `--search local`/`existing`
+turn the pi-shared tools back on.
 
 Existing MCP servers must implement `web_search(query, num_results)` and
 `web_fetch(url, max_chars)` as direct HTTP JSON `tools/call` requests. The client

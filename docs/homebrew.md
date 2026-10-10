@@ -414,7 +414,8 @@ This checks inventory reachability/authentication, not actual `tools/call`
 compatibility, result formats, or billable provider readiness. Plans, status and
 updates remain offline. Authentication is scoped to the chosen endpoint and
 requires HTTPS or loopback HTTP. Environment overrides remain authoritative.
-`--search skip` preserves existing config and does not stop services.
+`--search skip` preserves existing config and does not stop services. `--search own`
+sets `webSearchEnabled: false` so your own search tools replace pi-shared's.
 Missing required credentials fail rather than claim success. Earlier approved
 actions are not rolled back; incomplete setups remain retryable.
 

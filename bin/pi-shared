@@ -462,7 +462,7 @@ def setup(args):
                   "(contents never shown; an existing different token is never overwritten)")
         overrides = [name for name in ("PI_WEBSEARCH_MCP_URL", "SEARCH_MCP_URL", "WEBSEARCH_MCP_URL",
                                        "PI_WEBSEARCH_MCP_API_KEY", "SEARCH_MCP_API_KEY") if env.get(name)]
-        if overrides and args.search_selection["kind"] != "skip":
+        if overrides and args.search_selection["kind"] not in {"skip", "own"}:
             print("  Search environment overrides remain active: " + ", ".join(overrides) +
                   ". Review/remove conflicting overrides in the shell that launches Pi; values are not shown.")
     print(plan.getvalue(), end="")
@@ -872,7 +872,7 @@ def main():
   Local gateway          setup --with model-gateway
   Local models (oMLX)     setup --with omlx --omlx install
   Browser automation     setup --with-browser / --without-browser
-  Web search             setup --search local / existing / skip
+  Web search             setup --search local / existing / own / skip
   Omnigent checks        setup --with-omnigent (checks only, not installation)
   Recovery guidance      setup --recovery guide (no installation)
   Guided choices         setup --guided
@@ -965,6 +965,7 @@ Safety and prerequisites:
   --with adds access and preserves saved choices. Local and remote gateways
   cannot coexist; --mode is not a migration or removal command.
   --search skip does not stop existing search services.
+  --search own turns off pi-shared's search tools so your own can provide them.
   Setup never downloads LLM weights or tests inference.
   Configure providers, models and local gateway routes separately.
   Omnigent/recovery options are not installers.
@@ -993,7 +994,7 @@ Safety and prerequisites:
     browser.add_argument("--without-browser", action="store_true", default=None, help="Do not select browser-worker/Chromium")
     browser.add_argument("--with-browser", dest="without_browser", action="store_false", help="Select browser-worker and Chromium")
     search = p.add_argument_group("Web search")
-    search.add_argument("--search", choices=["local", "existing", "skip"], help="Install local Brave search, connect to a compatible MCP server, or leave search unchanged")
+    search.add_argument("--search", choices=["local", "existing", "own", "skip"], help="Install local Brave search, connect to a compatible MCP server, use your own search tools (pi-shared search off), or leave search unchanged")
     search.add_argument("--with-search", action="store_true", help="Compatibility alias for local search")
     search.add_argument("--search-url", help="Existing search MCP HTTP(S) endpoint; must expose web_search and web_fetch")
     search.add_argument("--search-key-file", help="Private 0600 broker bearer-token file (not a Brave key)")

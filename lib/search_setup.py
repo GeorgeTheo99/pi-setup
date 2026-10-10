@@ -164,7 +164,7 @@ def validate_saved(selection):
     if not isinstance(selection, dict):
         raise RuntimeError("Invalid saved search selection")
     kind = selection.get("kind")
-    if kind == "skip":
+    if kind in {"skip", "own"}:
         valid = set(selection) == {"kind", "url"} and selection["url"] is None
     elif kind == "local":
         valid = set(selection) == {"kind", "url", "data_dir", "port"}
@@ -211,14 +211,15 @@ def collect(args, previous, env, code_root, interactive, choose):
         validate_saved(saved)
     explicit = getattr(args, "search", None)
     legacy = bool(getattr(args, "with_search", False))
-    if explicit not in {None, "local", "existing", "skip"}:
+    if explicit not in {None, "local", "existing", "own", "skip"}:
         raise RuntimeError("Invalid --search choice")
     if legacy and explicit not in {None, "local"}:
-        raise RuntimeError("--with-search conflicts with --search existing/skip")
+        raise RuntimeError("--with-search conflicts with --search existing/own/skip")
     kind = explicit or ("local" if legacy else None)
     kept = False
     if kind is None and interactive:
         choices = {"local": "Install local Brave search", "existing": "Connect an existing MCP endpoint",
+                   "own": "Use my own search tools (turn off pi-shared web_search/web_fetch/deep_research)",
                    "skip": "No new search provisioning (existing tools/config stay enabled)"}
         if saved:
             choices = {"keep": "Keep saved search selection", **choices}
@@ -238,8 +239,8 @@ def collect(args, previous, env, code_root, interactive, choose):
         raise RuntimeError("--search-url and --search-key-file require --search existing")
     if (brave_arg is not None or decodo_arg is not None or port_arg is not None) and kind != "local":
         raise RuntimeError("--brave-key-file, --decodo-key-file and --search-port require --search local")
-    if kind == "skip":
-        return {"kind": "skip", "url": None}, {}
+    if kind in {"skip", "own"}:
+        return {"kind": kind, "url": None}, {}
     secrets = {}
     if kind == "existing":
         prior = saved if saved and saved["kind"] == "existing" else {}
@@ -542,6 +543,9 @@ def apply(selection, secrets, env):
         raise RuntimeError("Invalid pending search credentials")
     if kind == "skip":
         return
+    if kind == "own":
+        _write_config(*_configuration(selection))
+        return
     pending = {name: _secret(value) for name, value in secrets.items()}
     if "search_key" in pending and "key_file" not in selection:
         raise RuntimeError("Pending bearer credential needs a key file")
@@ -598,6 +602,11 @@ def _configuration(selection):
             raise RuntimeError("Invalid research configuration JSON; refusing to replace it") from None
         if not isinstance(config, dict):
             raise RuntimeError("Research configuration must be a JSON object")
+    if selection["kind"] == "own":
+        # Leave endpoints untouched so switching back is lossless; only deselect the wrappers.
+        config["webSearchEnabled"] = False
+        return config_path, config
+    config.pop("webSearchEnabled", None)
     config.pop("mcpUrl", None)
     config["websearchMcpUrl"] = selection["url"]
     for name in ("websearchMcpKeyFile", "websearchMcpKeyUrl"):
@@ -642,6 +651,8 @@ def describe(selection):
     validate_saved(selection)
     if selection["kind"] == "skip":
         print("Search: no new provisioning; existing search configuration/tools are preserved.")
+    elif selection["kind"] == "own":
+        print("Search: own tools — pi-shared web_search/web_fetch/deep_research off (webSearchEnabled=false); endpoints and services unchanged.")
     else:
         print(f"Search: {selection['kind']} — {selection['url']}")
         if selection["kind"] == "local":

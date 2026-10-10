@@ -715,3 +715,31 @@ def test_reapplying_same_decodo_token_is_idempotent(home):
     before = snapshot(home)
     search.apply(selected, secrets, {})
     assert snapshot(home) == before
+
+
+def test_own_disables_pi_shared_search_and_local_or_existing_reenables(home, compatible_inventory, capsys):
+    config = home / ".pi/research/config.json"
+    private(config, json.dumps({"websearchMcpUrl": "https://search.example/mcp", "browserWorkerEnabled": True}))
+    selection, secrets = collect(home, search="own")
+    assert selection == {"kind": "own", "url": None} and secrets == {}
+    search.validate_saved(selection)
+    search.describe(selection)
+    assert "webSearchEnabled=false" in capsys.readouterr().out
+    search.apply(selection, secrets, {})
+    assert json.loads(config.read_text()) == {"websearchMcpUrl": "https://search.example/mcp",
+                                              "browserWorkerEnabled": True, "webSearchEnabled": False}
+    assert config.stat().st_mode & 0o777 == 0o600
+    search.configure(selection)
+    assert json.loads(config.read_text())["webSearchEnabled"] is False
+    search.apply(*existing(home), {})
+    reenabled = json.loads(config.read_text())
+    assert "webSearchEnabled" not in reenabled and reenabled["browserWorkerEnabled"] is True
+
+
+def test_own_rejects_endpoint_and_key_options(home):
+    with pytest.raises(RuntimeError, match="require --search existing"):
+        collect(home, search="own", search_url="https://search.example/mcp")
+    with pytest.raises(RuntimeError, match="require --search local"):
+        collect(home, search="own", brave_key_file=str(home / "k"))
+    with pytest.raises(RuntimeError, match="Invalid saved search selection"):
+        search.validate_saved({"kind": "own", "url": "https://search.example/mcp"})
