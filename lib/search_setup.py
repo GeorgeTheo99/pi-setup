@@ -650,17 +650,17 @@ def describe(selection):
     """Print only validated, credential-free selection metadata."""
     validate_saved(selection)
     if selection["kind"] == "skip":
-        print("Search: no new provisioning; existing search configuration/tools are preserved.")
+        print("  Search: no new provisioning; existing search configuration/tools are preserved.")
     elif selection["kind"] == "own":
-        print("Search: own tools — pi-shared web_search/web_fetch/deep_research off (webSearchEnabled=false); endpoints and services unchanged.")
+        print("  Search: own tools — pi-shared web_search/web_fetch/deep_research off (webSearchEnabled=false); endpoints and services unchanged.")
     else:
-        print(f"Search: {selection['kind']} — {selection['url']}")
+        print(f"  Search: {selection['kind']} — {selection['url']}")
         if selection["kind"] == "local":
-            print(f"Search data: {selection['data_dir']} (port {selection['port']})")
+            print(f"  Search data: {selection['data_dir']} (port {selection['port']})")
         else:
             if "key_file" in selection:
-                print(f"Search bearer key file: {selection['key_file']} (scoped to this exact endpoint)")
-            print("Search setup approval permits POST tools/list inventory checks before saving routing; "
+                print(f"  Search bearer key file: {selection['key_file']} (scoped to this exact endpoint)")
+            print("  Search setup approval permits POST tools/list inventory checks before saving routing; "
                   "no tools/call, initialize, session or SSE negotiation. Plans and updates stay offline.")
 
 

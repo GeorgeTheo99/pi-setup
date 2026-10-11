@@ -24,7 +24,9 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.34** keeps stock Pi **0.99.1**. The update's MCP migration no longer
+Package **0.1.35** keeps stock Pi **0.99.1** and makes setup, update and status
+output [compact by default](#output); `--verbose` restores full detail.
+Package 0.1.34 keeps stock Pi 0.99.1. The update's MCP migration no longer
 stops on an existing profile `mcp.json`, extra adapter layers or `imports`: it rebuilds
 the adapter's effective configuration, converts each server independently and lists
 any it leaves out (see [managed updates](mcp.md#managed-updates)).
@@ -195,6 +197,21 @@ safe owned files, and never evaluates a shell body; stored gateway credentials
 are not exposed as subprocess arguments and generated outputs are private files.
 Missing or invalid catalogs cannot erase a configured launcher. Explicit
 setup/update holds the per-user operation lock while it regenerates the config.
+
+## Output
+
+`setup`, `update` and `status` print one line per stage: the plan (once, even
+though the updater re-executes its upgraded CLI), a status line for the Homebrew
+package, installer and check steps, a `Modules` table of revisions and results, then
+a single `Not verified:` footer collecting every limitation of the checks (for
+example untested provider requests and inference). Homebrew's update report and the
+module installers' output are captured and shown only if that step fails.
+Warnings and failures are always shown.
+
+Add `--verbose` for the full stream from Homebrew, module installers and every
+doctor check. Colors are used only on a terminal (`NO_COLOR` disables them), so
+logs and pipes stay plain text. Running `install.sh` or `bin/doctor` directly keeps
+full detail; `PI_SETUP_VERBOSE=0` selects the compact form.
 
 ## Failure boundaries
 

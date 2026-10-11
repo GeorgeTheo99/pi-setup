@@ -58,7 +58,9 @@ Routine maintenance is `pi-shared update` (also **bare `pi update`** with packag
 0.1.11+): it remembers the selected setup,
 updates its owning package/source and selected modules, refreshes the launcher
 config (offline, via `pi --launcher-refresh`), and verifies the result.
-`pi-shared update --plan` is read-only. Explicit `pi update` arguments retain
+`pi-shared update --plan` is read-only. Output is one line per stage with a module
+summary and one "Not verified" footer; add `--verbose` for full installer and
+check output ([details](docs/updates.md#output)). Explicit `pi update` arguments retain
 stock behavior; use `pi update --extensions` for Pi package updates only.
 Updates never touch software, services,
 or models beyond the recorded selection. See [update ownership and safety](docs/updates.md),

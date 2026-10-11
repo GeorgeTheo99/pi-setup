@@ -32,6 +32,7 @@ import update_support
 import existing_gateway
 import model_access
 import direct_setup
+import report
 import search_setup
 import setup_menu
 
@@ -39,12 +40,33 @@ FORMULA = "georgetheo99/tap/pi-shared"
 MODULES = {"pi-shared", "model-gateway", "browser-worker", "local_web_search"}
 OMLX_FORMULA = "jundot/omlx/omlx"
 OMLX_GUIDE = "https://github.com/jundot/omlx#installation"
+VERBOSE_HELP = "Show full installer, Homebrew and check output (default: one line per stage; failures always show details)"
 
 
-def run(args, *, env=None):
+def run(args, *, env=None, quiet=False):
     sys.stdout.flush()
     sys.stderr.flush()
-    subprocess.run([str(a) for a in args], check=True, env=env)
+    if not quiet:
+        subprocess.run([str(a) for a in args], check=True, env=env)
+        return
+    # Compact output: keep third-party detail private unless the step fails.
+    result = subprocess.run([str(a) for a in args], env=env, stdout=subprocess.PIPE,
+                            stderr=subprocess.STDOUT, text=True, errors="replace", check=False)
+    if result.returncode:
+        sys.stderr.write(result.stdout)
+        raise subprocess.CalledProcessError(result.returncode, result.args)
+
+
+def module_rows(modules, before, after, unchanged=()):
+    """Summarize module revisions: name, short revision change, result."""
+    rows = []
+    for name in modules:
+        old, new = before.get(name, ""), after.get(name, "")
+        change = f"{old[:7]} {report.arrow()} {new[:7]}" if old and new and old != new else (new or old)[:7] or "-"
+        result = ("unchanged; not restarted" if name in unchanged else "installed" if not old
+                  else "reinstalled" if old == new else "updated")
+        rows.append((name, change, result))
+    return rows
 
 
 def choose(question, choices):
@@ -169,6 +191,16 @@ def write_state(value):
     finally:
         if os.path.exists(name):
             os.unlink(name)
+
+
+def next_steps(args, code_root):
+    steps = StringIO()
+    with redirect_stdout(steps):
+        guidance(args, code_root)
+    if steps.getvalue():
+        print("\nNext steps:")
+        for text in steps.getvalue().splitlines():
+            print("  " + text)
 
 
 def guidance(args, code_root):
@@ -467,7 +499,7 @@ def setup(args):
                   ". Review/remove conflicting overrides in the shell that launches Pi; values are not shown.")
     print(plan.getvalue(), end="")
     if args.plan:
-        guidance(args, code_root)
+        next_steps(args, code_root)
         return 0
     if platform.system() != "Darwin":
         raise RuntimeError("Service setup currently supports macOS only.")
@@ -493,16 +525,17 @@ def setup(args):
             return 0
     if gateway:
         existing_gateway.check_key_file(gateway)
-    with update_lock():
+    with update_lock(), report.Session(getattr(args, "verbose", False)) as out:
         current = read_state(allow_incomplete=True) if state_path().exists() else None
         if current != previous:
             raise RuntimeError("Setup receipt changed during approval; rerun to review the current selection.")
         args.previous_services = previous.get("services", {}) if previous else {}
         args.previous_omlx_version = previous.get("omlx_version") if previous else None
-        return apply_setup(args, code_root, modules, flags, env, gateway)
+        args.previous_revisions = previous.get("revisions", {}) if previous else {}
+        return apply_setup(args, code_root, modules, flags, {**env, **out.env}, out, gateway)
 
 
-def apply_setup(args, code_root, modules, flags, env, gateway=None):
+def apply_setup(args, code_root, modules, flags, env, out, gateway=None):
     agent_dir = str(Path(env.get("PI_SHARED_AGENT_DIR", str(Path.home() / ".pi/agent"))).expanduser().resolve())
     state = {"version": 2, "status": "incomplete", "code_root": str(code_root),
              "modules": modules, "agent_dir": agent_dir,
@@ -562,7 +595,8 @@ def apply_setup(args, code_root, modules, flags, env, gateway=None):
         direct_setup.verify(state["cli_file"], code_root / "pi-shared")
     if gateway:
         run(existing_gateway.command(state, "connect"), env=env)
-        print("External gateway catalog configured. Remote readiness and inference NOT verified. Use pi models to list aliases.")
+        report.line("ok", "External gateway catalog configured. Use pi models to list aliases.")
+        out.note("External gateway: remote readiness and inference NOT verified.")
     if args.omlx == "install":
         if not args.reuse_omlx:
             if not args.resume_omlx_package:
@@ -592,8 +626,12 @@ def apply_setup(args, code_root, modules, flags, env, gateway=None):
     state["services"] = update_support.service_snapshot(modules, state["settings"], args.omlx)
     state["status"] = "module-checks-passed"
     write_state(state)
-    print("Selected module checks passed. Authentication, local routing, inference and recovery readiness are separate.")
-    guidance(args, code_root)
+    report.table("Modules", module_rows(modules, getattr(args, "previous_revisions", {}), state["revisions"]))
+    out.note("Authentication, local routing, inference and recovery readiness are separate from these module checks.")
+    out.footer()
+    print()
+    report.line("ok", "Selected module checks passed. Run pi for stock Pi, or pi --launcher-list for configured aliases.")
+    next_steps(args, code_root)
     return 0
 
 
@@ -678,11 +716,10 @@ def read_state(allow_incomplete=False):
     return data
 
 
-def status(require_omnigent=False):
+def status(require_omnigent=False, verbose=False):
     data = read_state()
     if data.get("mode") == "direct":
         direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
-    print("Checking last selected modules only; provider/model/recovery readiness is not implied.", flush=True)
     env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_"))}
     env.update(data.get("settings", {}))
     env.update(PI_SETUP_CODE_ROOT=data["code_root"], PI_CODING_AGENT_DIR=data["agent_dir"],
@@ -694,17 +731,20 @@ def status(require_omnigent=False):
     command = [ROOT / "bin/doctor", *[arg for m in data["modules"] for arg in ("--module", m)]]
     if require_omnigent or data.get("omnigent", False):
         command.append("--require-omnigent")
-    run(command, env=env)
-    if data.get("external_gateway"):
-        run(existing_gateway.command(data, "check"), env=env)
-        print("External gateway configuration checked OFFLINE; remote reachability, authentication and inference NOT tested.")
-    if data.get("mode") == "direct":
-        print("Direct-only configuration checked OFFLINE; native provider authentication and inference NOT tested.")
-    if data.get("search"):
-        search_setup.describe(data["search"])
-        print("Search routing shown from saved setup; external MCP reachability/authentication and provider queries NOT tested.")
-    if data.get("omlx"):
-        print("oMLX is separately managed; status does not test its service or model inference.")
+    with report.Session(verbose) as out:
+        run(command, env={**env, **out.env})
+        if data.get("external_gateway"):
+            run(existing_gateway.command(data, "check"), env=env)
+            out.note("External gateway configuration checked OFFLINE; remote reachability, authentication and inference NOT tested.")
+        if data.get("mode") == "direct":
+            out.note("Direct-only configuration checked OFFLINE; native provider authentication and inference NOT tested.")
+        if data.get("search"):
+            search_setup.describe(data["search"])
+            out.note("Search routing shown from saved setup; external MCP reachability/authentication and provider queries NOT tested.")
+        if data.get("omlx"):
+            out.note("oMLX is separately managed; status does not test its service or model inference.")
+        out.note("Last selected modules only; provider/model/recovery readiness is not implied.")
+        out.footer()
     return 0
 
 
@@ -741,13 +781,20 @@ def migrate_mcp(agent_dir, dry_run):
     """Retire a leftover pi-mcp-adapter selection so Pi's built-in /mcp loads."""
     import capability_setup
     import mcp_setup
-    report = capability_setup.result("mcp", "apply")
+    result = capability_setup.result("mcp", "apply")
 
     def value(label):
-        return next((row["value"] for row in report["evidence"] if row["label"] == label), None)
+        return next((row["value"] for row in result["evidence"] if row["label"] == label), None)
+
+    def say(kind, message):
+        # Plan items stay indented under the plan; applied results are status lines.
+        if dry_run:
+            print(f"  {message}")
+        else:
+            report.line(kind, message)
 
     try:
-        if not mcp_setup.update_profile(Path(agent_dir), report, dry_run):
+        if not mcp_setup.update_profile(Path(agent_dir), result, dry_run):
             return
     except Exception as exc:  # Advisory step: never leave the verified update unrecorded.
         reason = (str(exc) if isinstance(exc, mcp_setup.SetupError) else
@@ -755,19 +802,19 @@ def migrate_mcp(agent_dir, dry_run):
                   f"unexpected error ({type(exc).__name__})")
         backup = value("Rollback backup directory")
         if value("Profile writes started"):
-            print(f"  MCP: migration of {agent_dir} may be PARTIALLY applied: {reason}")
-            print(f"  MCP: check the rollback manifest in {backup}; restore changed files whose hashes still match before retrying or using /setup mcp.")
+            say("fail", f"MCP: migration of {agent_dir} may be PARTIALLY applied: {reason}")
+            print(f"  Check the rollback manifest in {backup}; restore changed files whose hashes still match before retrying or using /setup mcp.")
         else:
-            print(f"  MCP: legacy adapter migration {'will be refused' if dry_run else 'NOT applied'} for {agent_dir}: {reason}")
-            print("  MCP: Pi's built-in /mcp stays inactive in that profile until this is resolved; then rerun pi-shared update or use /setup mcp.")
+            say("warn", f"MCP: legacy adapter migration {'will be refused' if dry_run else 'NOT applied'} for {agent_dir}: {reason}")
+            print("  Pi's built-in /mcp stays inactive in that profile until this is resolved; then rerun pi-shared update or use /setup mcp.")
         return
     servers = value("Servers to migrate")
     if dry_run:
-        print(f"  Migrate {agent_dir} from legacy pi-mcp-adapter to Pi's built-in MCP ({servers} server(s)); private backups, no npm uninstall.")
+        say("step", f"Migrate {agent_dir} from legacy pi-mcp-adapter to Pi's built-in MCP ({servers} server(s)); private backups, no npm uninstall.")
     else:
-        print(f"  MCP: migrated {agent_dir} to Pi's built-in MCP ({servers} server(s)); backups in {value('Rollback backup directory')}. Restart Pi sessions.")
-    for warning in dict.fromkeys(report["warnings"]):
-        print(f"    - {warning}")
+        say("ok", f"MCP: migrated {agent_dir} to Pi's built-in MCP ({servers} server(s)); backups in {value('Rollback backup directory')}. Restart Pi sessions.")
+    for warning in dict.fromkeys(result["warnings"]):
+        print(f"{'    ' if dry_run else '  '}- {warning}")
 
 
 def update(args):
@@ -776,22 +823,28 @@ def update(args):
         raise RuntimeError("This older receipt did not record all choices. Run setup once with this version; future updates need no questionnaire.")
     if data["status"] == "incomplete" and data.get("operation") != "update":
         raise RuntimeError("Initial setup is incomplete; finish setup before updating")
-    print("Update plan: retain saved modules, paths, models and preferences.")
-    print("  Selected: " + ", ".join(data["modules"]))
-    if data.get("search"):
-        search_setup.describe(data["search"])
-    if data.get("mode") == "direct":
-        print("  Preserve direct-only policy and native Pi authentication/model settings; no gateway catalog/profile or oMLX.")
-    if data.get("external_gateway"):
-        print(f"  Preserve external gateway: {data['external_gateway']['url']}; check configuration OFFLINE only.")
-        print("  No remote catalog refresh or remote service operations. Rerun setup to explicitly refresh discovery.")
-    if data.get("omlx") == "install":
-        print("  Also update owned Homebrew oMLX; restart it only if its installed version changes.")
-    print("  Update owned CLI/runtime; apply changed selected services; refresh dependencies/shortcuts; verify.")
-    print("  No LLM model downloads or provider calls. Affected services may restart; failed steps are not rolled back.")
-    migrate_mcp(data["agent_dir"], dry_run=True)
+    verbose = getattr(args, "verbose", False)
+    # The re-executed new CLI inherits the lock; its parent already showed the plan.
+    reexec = args.modules_only and not args.plan and "PI_SHARED_UPDATE_LOCK_FD" in os.environ
+    if not reexec:
+        print("Update plan: retain saved modules, paths, models and preferences.")
+        print("  Selected: " + ", ".join(data["modules"]))
+        if data.get("search"):
+            search_setup.describe(data["search"])
+        if data.get("mode") == "direct":
+            print("  Preserve direct-only policy and native Pi authentication/model settings; no gateway catalog/profile or oMLX.")
+        if data.get("external_gateway"):
+            print(f"  Preserve external gateway: {data['external_gateway']['url']}; check configuration OFFLINE only.")
+            print("  No remote catalog refresh or remote service operations. Rerun setup to explicitly refresh discovery.")
+        if data.get("omlx") == "install":
+            print("  Also update owned Homebrew oMLX; restart it only if its installed version changes.")
+        print("  Update owned CLI/runtime; apply changed selected services; refresh dependencies/shortcuts; verify.")
+        print("  No LLM model downloads or provider calls. Affected services may restart; failed steps are not rolled back.")
+        migrate_mcp(data["agent_dir"], dry_run=True)
     if args.plan:
         return 0
+    if not reexec:
+        print()
     if platform.system() != "Darwin":
         raise RuntimeError("Updates currently support macOS only")
     with update_lock() as fd:
@@ -822,9 +875,14 @@ def update(args):
                 if prefix.resolve() != ROOT.parent.resolve():
                     raise RuntimeError("This CLI is not the installed Homebrew package; refusing to update a different installation")
                 launcher = prefix / "bin/pi-shared"
-                run(["brew", "update"])
+                old_version = prefix.resolve().name  # opt symlink -> Cellar/<formula>/<version>
+                report.line("step", f"Updating Homebrew package {formula}...")
+                run(["brew", "update"], quiet=not verbose)
                 # This checks existing HEAD installs without switching stable channels.
-                run(["brew", "upgrade", "--fetch-HEAD", formula])
+                run(["brew", "upgrade", "--fetch-HEAD", formula], quiet=not verbose)
+                new_version = prefix.resolve().name
+                report.line("ok", f"pi-shared package {old_version} {report.arrow()} {new_version}"
+                            if old_version != new_version else f"pi-shared package {new_version} is current")
             else:
                 top = subprocess.check_output(["git", "-C", str(ROOT), "rev-parse", "--show-toplevel"], text=True).strip()
                 dirty = subprocess.check_output(["git", "-C", str(ROOT), "status", "--porcelain", "--untracked-files=all"], text=True)
@@ -836,57 +894,67 @@ def update(args):
                 launcher = ROOT / "bin/pi-shared"
             os.set_inheritable(fd, True)
             env = {**os.environ, "PI_SHARED_UPDATE_LOCK_FD": str(fd)}
-            os.execve(launcher, [str(launcher), "update", "--modules-only"], env)
+            os.execve(launcher, [str(launcher), "update", "--modules-only", *(["--verbose"] if verbose else [])], env)
             return 0
-        env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT", "MCP_TAILNET_"))}
-        env.update(data["settings"])
-        env.update(service_env)
-        env.update(PI_SETUP_CODE_ROOT=data["code_root"], PI_SHARED_AGENT_DIR=data["agent_dir"],
-                   PI_SHARED_BOOTSTRAP_LAUNCHERS="1" if data.get("bootstrap_launchers") else "0",
-                   PI_SHARED_CLI_OUT=data.get("cli_file", str(Path.home() / ".pi/launcher.json")),
-                   PI_SETUP_REFRESH_LAUNCHERS="1" if data.get("launcher_refresh", True) else "0",
-                   PI_SETUP_INSTALLED_REVISIONS=json.dumps(data.get("revisions", {})
-                       if not retry_modules and data.get("runtime_versions") == update_support.runtime_versions() else {}))
-        if "launchers_file" in data:
-            env["PI_SHARED_LAUNCHERS_OUT"] = data["launchers_file"]
-        env["PI_LAUNCHER_CONFIG"] = env["PI_SHARED_CLI_OUT"]
-        data["cli_file"] = env["PI_SHARED_CLI_OUT"]
-        data["settings"]["PI_SHARED_CLI_OUT"] = data["cli_file"]
-        data.update(status="incomplete", operation="update", phase="modules")
-        write_state(data)
-        if data.get("omlx") == "install":
-            update_support.omlx_version()  # refuse a missing installation before upgrade
-            run(["brew", "upgrade", "--fetch-HEAD", OMLX_FORMULA])
-            after = update_support.omlx_version()
-            if data.get("omlx_version") != after:
-                # Compare to the last successfully applied version, not this
-                # invocation's pre-upgrade package: a failed restart must retry.
-                run(["brew", "services", "restart", OMLX_FORMULA])
-            wait_omlx(omlx_url, allow_auth_required=True)
-            owned = update_support.service_snapshot([], data["settings"], "install").get("omlx")
-            if not owned:
-                raise RuntimeError("oMLX ownership metadata is missing after update")
-            data["omlx_version"] = after
-            data["services"]["omlx"] = owned
+        with report.Session(verbose) as out:
+            env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT", "MCP_TAILNET_"))}
+            env.update(data["settings"])
+            env.update(service_env)
+            env.update(PI_SETUP_CODE_ROOT=data["code_root"], PI_SHARED_AGENT_DIR=data["agent_dir"],
+                       PI_SHARED_BOOTSTRAP_LAUNCHERS="1" if data.get("bootstrap_launchers") else "0",
+                       PI_SHARED_CLI_OUT=data.get("cli_file", str(Path.home() / ".pi/launcher.json")),
+                       PI_SETUP_REFRESH_LAUNCHERS="1" if data.get("launcher_refresh", True) else "0",
+                       PI_SETUP_INSTALLED_REVISIONS=json.dumps(data.get("revisions", {})
+                           if not retry_modules and data.get("runtime_versions") == update_support.runtime_versions() else {}))
+            if "launchers_file" in data:
+                env["PI_SHARED_LAUNCHERS_OUT"] = data["launchers_file"]
+            env["PI_LAUNCHER_CONFIG"] = env["PI_SHARED_CLI_OUT"]
+            data["cli_file"] = env["PI_SHARED_CLI_OUT"]
+            data["settings"]["PI_SHARED_CLI_OUT"] = data["cli_file"]
+            env.update(out.env)
+            installed = json.loads(env["PI_SETUP_INSTALLED_REVISIONS"])
+            before = dict(data.get("revisions", {}))
+            data.update(status="incomplete", operation="update", phase="modules")
             write_state(data)
-        command = [ROOT / "install.sh", "--update-changed", "--only", ",".join(data["modules"])]
-        if data.get("omnigent", False):
-            command.append("--with-omnigent")
-        run(command, env=env)
-        if data.get("search"):
-            search_setup.configure(data["search"])
-        if data.get("mode") == "direct":
-            direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
-        if data.get("external_gateway"):
-            run(existing_gateway.command(data, "check"), env=env)
-        migrate_mcp(data["agent_dir"], dry_run=False)
-        data["runtime_versions"] = update_support.runtime_versions()
-        data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])
-        data["services"] = update_support.service_snapshot(data["modules"], data["settings"], data.get("omlx"))
-        data["status"] = "module-checks-passed"
-        data["phase"] = "verified"
-        write_state(data)
-    print("Update verified. Use pi models. Restart older shells to discard previously loaded launcher functions.")
+            if data.get("omlx") == "install":
+                update_support.omlx_version()  # refuse a missing installation before upgrade
+                report.line("step", f"Updating Homebrew package {OMLX_FORMULA}...")
+                run(["brew", "upgrade", "--fetch-HEAD", OMLX_FORMULA], quiet=not verbose)
+                after = update_support.omlx_version()
+                if data.get("omlx_version") != after:
+                    # Compare to the last successfully applied version, not this
+                    # invocation's pre-upgrade package: a failed restart must retry.
+                    run(["brew", "services", "restart", OMLX_FORMULA], quiet=not verbose)
+                wait_omlx(omlx_url, allow_auth_required=True)
+                owned = update_support.service_snapshot([], data["settings"], "install").get("omlx")
+                if not owned:
+                    raise RuntimeError("oMLX ownership metadata is missing after update")
+                data["omlx_version"] = after
+                data["services"]["omlx"] = owned
+                write_state(data)
+            command = [ROOT / "install.sh", "--update-changed", "--only", ",".join(data["modules"])]
+            if data.get("omnigent", False):
+                command.append("--with-omnigent")
+            run(command, env=env)
+            if data.get("search"):
+                search_setup.configure(data["search"])
+            if data.get("mode") == "direct":
+                direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
+            if data.get("external_gateway"):
+                run(existing_gateway.command(data, "check"), env=env)
+            migrate_mcp(data["agent_dir"], dry_run=False)
+            data["runtime_versions"] = update_support.runtime_versions()
+            data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])
+            data["services"] = update_support.service_snapshot(data["modules"], data["settings"], data.get("omlx"))
+            data["status"] = "module-checks-passed"
+            data["phase"] = "verified"
+            write_state(data)
+            unchanged = [m for m in data["modules"] if m != "pi-shared" and installed.get(m) == data["revisions"].get(m)]
+            report.table("Modules", module_rows(data["modules"], before, data["revisions"], unchanged))
+            out.note("Authentication, local routing, inference and recovery readiness are separate from these module checks.")
+            out.footer()
+    print()
+    report.line("ok", "Update verified. Use pi models. Restart older shells to discard previously loaded launcher functions.")
     return 0
 
 
@@ -929,7 +997,7 @@ Provider login, gateway onboarding and model downloads are separate steps.
 After setup: pi (use /login and /model); pi models lists configured routes.
 Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.34")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.35")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
     commands.add_parser("peekaboo", help="Standalone opt-in native macOS CLI: plan, status, apply, check")
     commands.add_parser("capability", help="Bounded /setup capability plans, missing-only scaffolds and explicit checks")
@@ -1011,6 +1079,7 @@ Safety and prerequisites:
     execution.add_argument("--plan", action="store_true", help="Show plan without commands, downloads, network or file changes")
     execution.add_argument("--yes", action="store_true", help="Apply explicit choices without prompting; incompatible with --guided; never download LLM weights")
     execution.add_argument("--update", action="store_true", help="Explicitly fetch/update selected writable module checkouts")
+    execution.add_argument("--verbose", action="store_true", help=VERBOSE_HELP)
     access = p.add_argument_group("Model access")
     access.add_argument("--with", dest="access", action="append", choices=model_access.CHOICES, default=[],
                    help="Add model access without discarding saved choices; repeat for combinations. omlx also selects model-gateway.")
@@ -1044,8 +1113,10 @@ Safety and prerequisites:
     u = commands.add_parser("update", help="Update the saved installation; no repeated setup questionnaire")
     u.add_argument("--plan", action="store_true", help="Read-only saved update plan")
     u.add_argument("--modules-only", action="store_true", help="Update selected modules without upgrading the owning CLI/runtime")
+    u.add_argument("--verbose", action="store_true", help=VERBOSE_HELP)
     s = commands.add_parser("status", help="Run doctor for the last successfully selected modules (executes trusted extension checks)")
     s.add_argument("--require-omnigent", action="store_true", help="Also check native-Pi prerequisites without changing the saved selection")
+    s.add_argument("--verbose", action="store_true", help="Show every check and its command output (default: one summary line)")
     p = commands.add_parser("uninstall", help="Detach user setup, archive changed files, preserve packages and user data")
     p.add_argument("--plan", action="store_true", help="Show exact actions and retained state without changes")
     p.add_argument("--yes", action="store_true", help="Apply teardown, including stopping recorded shared services")
@@ -1057,7 +1128,7 @@ Safety and prerequisites:
             return teardown.uninstall(args, read_state, state_path, update_lock)
         if args.command == "setup":
             return setup(args)
-        return update(args) if args.command == "update" else status(args.require_omnigent)
+        return update(args) if args.command == "update" else status(args.require_omnigent, args.verbose)
     except (EOFError, KeyboardInterrupt):
         print("\nCancelled; completed actions, if any, were not rolled back.", file=sys.stderr)
         return 130

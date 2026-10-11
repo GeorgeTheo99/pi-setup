@@ -52,9 +52,42 @@ while [ $# -gt 0 ]; do
   shift
 done
 
-log()  { printf '\033[1;34m[pi-setup]\033[0m %s\n' "$*"; }
-warn() { printf '\033[1;33m[pi-setup]\033[0m %s\n' "$*" >&2; }
-die()  { printf '\033[1;31m[pi-setup]\033[0m %s\n' "$*" >&2; exit 1; }
+# pi-shared runs this with PI_SETUP_VERBOSE=0 (compact: one line per stage,
+# step output replayed only on failure) and PI_SETUP_NOTES_FILE (limitations
+# for its single footer). Direct use keeps full detail.
+COMPACT=0
+[ "${PI_SETUP_VERBOSE:-1}" != 0 ] || COMPACT=1
+STEP='▶' OK='✓' WARN='!' FAIL='✗'
+if [ -z "${NO_COLOR:-}" ] && [ "${TERM:-dumb}" != dumb ]; then
+  if [ -t 1 ]; then STEP=$'\033[1m▶\033[0m'; OK=$'\033[32m✓\033[0m'; fi
+  if [ -t 2 ]; then WARN=$'\033[33m!\033[0m'; FAIL=$'\033[31m✗\033[0m'; fi
+fi
+log()    { printf '%s %s\n' "$STEP" "$*"; }
+ok()     { printf '%s %s\n' "$OK" "$*"; }
+warn()   { printf '%s %s\n' "$WARN" "$*" >&2; }
+die()    { printf '%s %s\n' "$FAIL" "$*" >&2; exit 1; }
+detail() { if [ "$COMPACT" -eq 0 ]; then log "$@"; fi; }
+note() {
+  if [ -n "${PI_SETUP_NOTES_FILE:-}" ]; then printf '%s\n' "$*" >>"$PI_SETUP_NOTES_FILE"; else log "$*"; fi
+}
+
+QUIET_LOG=""
+if [ "$COMPACT" -eq 1 ]; then
+  QUIET_LOG="$(mktemp "${TMPDIR:-/tmp}/pi-setup.XXXXXX")" || die "Cannot create a private step log"
+  trap 'rm -f "$QUIET_LOG"' EXIT
+fi
+# Run an external command or subshell function; compact runs keep its output
+# private unless it fails, but always surface module warnings (the shared "! "
+# convention). A hidden prompt cannot be answered, so compact steps get no stdin
+# and fail fast instead. Never pass a function that may call exit/die directly.
+quietly() {
+  if [ -z "$QUIET_LOG" ]; then "$@"; return; fi
+  local status=0
+  "$@" >"$QUIET_LOG" 2>&1 </dev/null || status=$?
+  if [ "$status" -eq 0 ]; then grep '^! ' "$QUIET_LOG" >&2 || true; else cat "$QUIET_LOG" >&2; fi
+  return "$status"
+}
+in_dir() ( cd "$1" && shift && "$@" )
 
 if [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ]; then
   [ -n "${PI_SHARED_CLI_OUT:-}" ] || die "Direct-only setup requires nonempty PI_SHARED_CLI_OUT"
@@ -149,7 +182,7 @@ checkout_repo() {
     status="$(git -C "$dest" status --porcelain --untracked-files=all)" || die "$dest worktree status check failed"
     [ -z "$status" ] || die "$dest has local changes; commit/stash them before installing"
     if [ "$UPDATE" -eq 1 ]; then
-      log "Fetching $(basename "$dest")..."
+      detail "Fetching $(basename "$dest")..."
       git -C "$dest" fetch -q --prune --tags origin '+refs/heads/*:refs/remotes/origin/*' || die "$dest fetch failed; installer not run"
     fi
   else
@@ -186,7 +219,7 @@ checkout_repo() {
     if [ "$head" != "$target" ] || { [ -n "$branch" ] && [ "$current" != "$branch" ]; }; then
       die "$dest checkout does not match $ref; use --update (local work is never reset)"
     fi
-    log "$(basename "$dest") matches $ref (cached refs; no fetch)"
+    detail "$(basename "$dest") matches $ref (cached refs; no fetch)"
     return 0
   fi
   # Never abandon unreferenced detached work or reset an ahead/diverged branch.
@@ -221,7 +254,7 @@ PY
 )" || die "Invalid installed revision receipt"
     revision="$(git -C "$dest" rev-parse HEAD)"
     if [ "$installed" = "$revision" ]; then
-      log "$name unchanged since successful installation; not restarting"
+      detail "$name unchanged since successful installation; not restarting"
       DOCTOR_ARGS+=(--module "$name")
       return 0
     fi
@@ -239,12 +272,12 @@ PY
     [ -x "$dest/bin/pi-shared-install" ] \
       && "$dest/bin/pi-shared-install" --help | grep -q -- '--enable-gateway' \
       || die "Shared installer lacks --enable-gateway; update pi-shared before composing model access"
-    (cd "$dest" && ./install.sh --enable-gateway) || die "$name installer failed"
+    quietly in_dir "$dest" ./install.sh --enable-gateway || die "$name installer failed"
   elif [ "$UPDATE_CHANGED" -eq 1 ] && [ "$name" = pi-shared ] && [ -z "${PI_SHARED_CLI_OUT:-}" ]; then
     # Keep the current launcher metadata/profile selection for the final refresh.
-    (cd "$dest" && ./install.sh --no-catalog) || die "$name installer failed"
+    quietly in_dir "$dest" ./install.sh --no-catalog || die "$name installer failed"
   else
-    (cd "$dest" && ./install.sh) || die "$name installer failed"
+    quietly in_dir "$dest" ./install.sh || die "$name installer failed"
   fi
   if [ "$name" = pi-shared ] && [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ]; then
     python3 -B "$SETUP_DIR/lib/direct_setup.py" "$PI_SHARED_CLI_OUT" "$dest" \
@@ -278,7 +311,7 @@ run_overlay() {
     for hook in "$dir"/setup.d/*; do
       [ -x "$hook" ] || continue
       log "Overlay hook: $(basename "$hook")"
-      "$hook" || die "Overlay hook failed: $hook"
+      quietly "$hook" || die "Overlay hook failed: $hook"
     done
   fi
   DOCTOR_ARGS+=(--overlay "$dir")
@@ -293,7 +326,7 @@ install_shell_rc() {
   # Legacy source-only orchestrators have not installed the replacement CLI.
   # Leave their existing shell wiring intact until they opt into JSON routing.
   [ -n "${PI_SHARED_CLI_OUT:-}" ] || return 0
-  [ "${PI_SETUP_NO_SHELL_RC:-0}" = "1" ] && { log "Skipping shell cleanup (PI_SETUP_NO_SHELL_RC=1)"; return 0; }
+  [ "${PI_SETUP_NO_SHELL_RC:-0}" = "1" ] && { detail "Skipping shell cleanup (PI_SETUP_NO_SHELL_RC=1)"; return 0; }
   python3 - "${PI_SETUP_ZSHRC:-$HOME/.zshrc}" <<'PY'
 import os, stat, sys, tempfile
 from pathlib import Path
@@ -368,13 +401,13 @@ if not names or len(names) != len(set(names)) or any(name not in known for name 
 PY
 fi
 mkdir -p "$CODE_ROOT"
-log "Modules root: $CODE_ROOT"
+detail "Modules root: $CODE_ROOT"
 while IFS=$'\t' read -r name repo ref tier; do
   [ -n "$name" ] || continue
   if wants_module "$tier" "$name"; then
     install_module "$name" "$repo" "$ref"
   else
-    log "Skipping $name ($tier)"
+    detail "Skipping $name ($tier)"
   fi
 done <<< "$rows"
 
@@ -385,7 +418,7 @@ done
 # Enable only the worker whose module installer succeeded. This deliberately
 # runs after overlays, without changing their web_search/web_fetch endpoints.
 if [ "$BROWSER_WORKER_INSTALLED" -eq 1 ]; then
-  python3 "$SETUP_DIR/lib/configure_browser_worker.py" --worker-root "$CODE_ROOT/browser-worker" \
+  quietly python3 "$SETUP_DIR/lib/configure_browser_worker.py" --worker-root "$CODE_ROOT/browser-worker" \
     || die "browser-worker installed but client configuration failed; see repair instructions above"
 fi
 
@@ -394,10 +427,10 @@ install_shell_rc
 if [ "$UPDATE_CHANGED" -eq 1 ] && [ "${PI_SETUP_REFRESH_LAUNCHERS:-1}" = 1 ]; then
   # Regenerate from the saved generated metadata, not reset endpoint/model choices.
   if [ -n "${PI_SHARED_CLI_OUT:-}" ]; then
-    PI_LAUNCHER_CONFIG="$PI_SHARED_CLI_OUT" "$CODE_ROOT/pi-shared/bin/pi-launch" --launcher-refresh \
+    PI_LAUNCHER_CONFIG="$PI_SHARED_CLI_OUT" quietly "$CODE_ROOT/pi-shared/bin/pi-launch" --launcher-refresh \
       || die "CLI refresh failed; selected module updates were not rolled back"
   else
-    "$CODE_ROOT/pi-shared/bin/pi-launchers-refresh" --launcher "${PI_SHARED_LAUNCHERS_OUT:-$LAUNCHERS}" \
+    quietly "$CODE_ROOT/pi-shared/bin/pi-launchers-refresh" --launcher "${PI_SHARED_LAUNCHERS_OUT:-$LAUNCHERS}" \
       || die "Launcher refresh failed; selected module updates were not rolled back"
   fi
 fi
@@ -407,7 +440,7 @@ if [ "${PI_SHARED_DIRECT_ONLY:-0}" = 1 ]; then
     || die "Direct-only policy verification failed; installation incomplete"
 fi
 
-log "Running doctor..."
+detail "Running doctor..."
 if [ "$REQUIRE_OMNIGENT" -eq 1 ]; then
   DOCTOR_ARGS+=(--require-omnigent)
 fi
@@ -416,10 +449,11 @@ fi
 PI_CODING_AGENT_DIR="${PI_SHARED_AGENT_DIR:-$HOME/.pi/agent}" \
   "$SETUP_DIR/bin/doctor" "${DOCTOR_ARGS[@]}" || die "Installation checks failed; install did not complete. Review diagnostics above (completed module installs were not rolled back)"
 
-log "Selected module checks passed (provider authentication/readiness is separate)."
 if [ "$REQUIRE_OMNIGENT" -eq 1 ]; then
-  log "Omnigent native-Pi prerequisites checked; native launch and inference were not tested."
-  log "Compatibility scope and explicit launch command: $SETUP_DIR/docs/omnigent-compatibility.md"
+  note "Omnigent native-Pi prerequisites checked; native launch and inference were not tested. Scope and explicit launch command: $SETUP_DIR/docs/omnigent-compatibility.md"
 fi
+# pi-shared prints its own summary and closing guidance.
+[ -z "${PI_SETUP_NOTES_FILE:-}" ] || exit 0
+ok "Selected module checks passed (provider authentication/readiness is separate)."
 log "Run \`pi\` for stock Pi, or \`pi --launcher-list\` for configured aliases."
 log "Restart older shells to discard previously loaded launcher functions; no shell rc was sourced."

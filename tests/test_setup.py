@@ -20,9 +20,9 @@ class Fixture(unittest.TestCase):
         self.code = self.root / "code"
         self.setup = self.root / "setup"
         self.tools = self.root / "tools"
-        for path in (self.home, self.code, self.setup / "bin", self.tools):
+        for path in (self.home, self.code, self.setup / "bin", self.setup / "lib", self.tools):
             path.mkdir(parents=True)
-        for name in ("install.sh", "bin/doctor"):
+        for name in ("install.sh", "bin/doctor", "lib/report.py"):
             shutil.copy2(ROOT / name, self.setup / name)
         # Only these real commands are exposed. All other installation/network
         # entrypoints are unavailable or fail loudly. Git transport is file-only.
@@ -459,6 +459,28 @@ class DoctorTests(Fixture):
         self.assertIn("Brave provider request NOT tested", output)
         self.env["SERVICE_EXIT"] = "3"
         self.assertIn("verification failed", self.doctor(success=False))
+
+    def test_compact_output_keeps_failures_and_hands_notes_to_footer(self):
+        self.script(self.code / "local_web_search/scripts/local-search",
+                    'test "$1" = verify || exit 97\necho VERIFY_DETAIL\necho "! VERIFY_WARNING"\n'
+                    'echo "▶ ingress check (not a TLS/network test)"\nexit "${SERVICE_EXIT:-0}"')
+        notes = self.root / "notes"
+        notes.touch()
+        self.env.update(PI_SETUP_VERBOSE="0", PI_SETUP_NOTES_FILE=str(notes))
+        output = self.doctor("--module", "pi-shared", "--module", "local_web_search")
+        self.assertNotIn("VERIFY_DETAIL", output)
+        self.assertIn("! VERIFY_WARNING", output)
+        self.assertNotIn("source present", output)
+        self.assertRegex(output, r"\d+ checks passed; not selected: model-gateway, browser-worker")
+        self.assertNotIn("Not verified", output)
+        self.assertIn("local_web_search: Brave provider request NOT tested", notes.read_text())
+        self.assertIn("successful checks are not full runtime readiness", notes.read_text())
+        self.assertIn("ingress check (not a TLS/network test)", notes.read_text().splitlines())
+        self.env["SERVICE_EXIT"] = "3"
+        output = self.doctor("--module", "pi-shared", "--module", "local_web_search", success=False)
+        self.assertIn("VERIFY_DETAIL", output)
+        self.assertIn("local_web_search verification failed", output)
+        self.assertRegex(output, r"\d+ check\(s\) failed, \d+ passed")
 
     def test_minimal_selection_does_not_probe_unselected_services(self):
         self.service("model-gateway", "bin/model-gateway")

@@ -82,6 +82,29 @@ def test_selected_modules_and_receipt(isolated, mode, expected):
     assert calls[0][0] == [str(ROOT / "install.sh"), "--minimal", *[f"--with-{m}" for m in expected[1:]]]
 
 
+def test_setup_and_status_print_one_footer_with_child_notes(isolated, capsys, monkeypatch):
+    calls = isolated[1]
+
+    def child(args, **kw):
+        calls.append((list(map(str, args)), kw))
+        with open(kw["env"]["PI_SETUP_NOTES_FILE"], "a") as notes:
+            notes.write("CHILD LIMITATION NOT tested\n")
+    monkeypatch.setattr(cli, "run", child)
+    assert cli.setup(options()) == 0
+    out = capsys.readouterr().out
+    env = calls[0][1]["env"]
+    assert env["PI_SETUP_VERBOSE"] == "0" and not Path(env["PI_SETUP_NOTES_FILE"]).exists()
+    assert "Modules\n  pi-shared  -  installed\n" in out
+    assert out.count("Not verified:") == 1
+    assert "  - CHILD LIMITATION NOT tested\n" in out and "recovery readiness are separate" in out
+    calls.clear()
+    assert cli.status(verbose=True) == 0
+    out = capsys.readouterr().out
+    assert calls[0][1]["env"]["PI_SETUP_VERBOSE"] == "1"
+    assert out.count("Not verified:") == 1 and "  - CHILD LIMITATION NOT tested\n" in out
+    assert "provider/model/recovery readiness is not implied" in out
+
+
 def test_omnigent_setup_is_opt_in_and_remembered(isolated):
     home, calls = isolated
     assert cli.setup(options(with_omnigent=True)) == 0

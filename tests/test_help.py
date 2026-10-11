@@ -82,7 +82,7 @@ def test_setup_help_groups_all_options_and_explains_safety(tmp_path):
     assert result.returncode == 0
     # Check the option definitions, not the usage line or example mentions.
     groups = {
-        "Preview and approval": ["--guided", "--plan", "--yes", "--update"],
+        "Preview and approval": ["--guided", "--plan", "--yes", "--update", "--verbose"],
         "Model access": ["--with", "--mode", "--local"],
         "Remote gateway": ["--gateway-url", "--gateway-key-file", "--allow-private-http"],
         "Local models (oMLX)": ["--omlx", "--omlx-url"],

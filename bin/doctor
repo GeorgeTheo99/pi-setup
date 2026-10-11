@@ -18,22 +18,68 @@ import signal
 import subprocess
 import sys
 
+sys.dont_write_bytecode = True
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+import report
+
+# Statements in successful verifier output that bound what was checked.
+LIMITATION = re.compile(r"\bnot (?:tested|verified)\b|\bnot an? [^;)]*\btest\b", re.IGNORECASE)
+
 
 class Doctor:
+    """Full detail by default; compact runs print warnings, failures and one summary."""
+
     def __init__(self):
-        self.failed = False
+        self.failed = 0
+        self.passed = 0
+        self.skipped = []
+        self.notes = []
+        self.verbose = report.verbose()
+        self.output = ""
 
     def ok(self, message):
-        print(f"  OK    {message}")
+        self.passed += 1
+        if self.verbose:
+            report.line("ok", message, "  ")
 
     def bad(self, message):
-        self.failed = True
-        print(f"  FAIL  {message}")
+        self.failed += 1
+        report.line("fail", message, "  ")
 
     def warn(self, message):
-        print(f"  WARN  {message}")
+        report.line("warn", message, "  ")
 
-    def command(self, argv, *, timeout=90, optional=False, required_line=None, require_output=False, env=None):
+    def skip(self, name):
+        self.skipped.append(name)
+        if self.verbose:
+            print(f"  - {name} not selected")
+
+    def note(self, message):
+        """A limitation of these checks, reported once in the "Not verified" footer."""
+        self.notes.append(message)
+
+    def detail(self, text, always=False):
+        # Successful command output is detail; failures always show it.
+        if self.verbose or always:
+            print("\n".join("    " + line if line else line for line in text.splitlines()))
+            return
+        # Compact runs still surface verifier warnings and limitations.
+        for line in text.splitlines():
+            message = re.sub(r"^\s*(?:[▶✓!]|OK\b|READY:|WARN:|DISABLED:)\s*", "", line)
+            if re.match(r"\s*(?:! |WARN:|DISABLED:)", line):
+                self.warn(message)
+            elif LIMITATION.search(line):
+                self.note(message)
+
+    def summary(self):
+        skipped = f"; not selected: {', '.join(self.skipped)}" if self.skipped else ""
+        if self.failed:
+            report.line("fail", f"{self.failed} check(s) failed, {self.passed} passed{skipped}")
+        else:
+            report.line("ok", f"{self.passed} checks passed{skipped}")
+        report.record(self.notes)
+
+    def command(self, argv, *, timeout=90, optional=False, required_line=None, require_output=False, env=None, show=True):
         try:
             process = subprocess.Popen(argv, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                        start_new_session=True, env=env)
@@ -47,13 +93,14 @@ class Doctor:
             self.bad(f"Cannot complete {shlex.join(map(str, argv))}: {exc}")
             return False
         text = (out + err).strip()
+        self.output = out.strip()
         if optional and process.returncode == 2:
             self.warn(text or f"Optional capability unavailable: {argv[0]}")
             return False
         if process.returncode != 0:
             self.bad(f"Check exited {process.returncode}: {shlex.join(map(str, argv))}")
             if text:
-                print(text[-6000:])
+                self.detail(text[-6000:], always=True)
             return False
         if require_output and not out.strip():
             self.bad(f"Command returned no output: {shlex.join(map(str, argv))}")
@@ -61,8 +108,8 @@ class Doctor:
         if required_line is not None and required_line not in [line.strip() for line in out.splitlines()]:
             self.bad(f"Command completed but did not return the expected response {required_line!r}")
             return False
-        if text:
-            print(text[-6000:])
+        if text and show:
+            self.detail(text[-6000:])
         return True
 
 
@@ -104,9 +151,9 @@ def main():
     def selected(name):
         return not args.module or name in args.module
 
-    def service(name, checker, evidence):
+    def service(name, checker, evidence, untested):
         if not selected(name):
-            doctor.warn(f"{name} not selected")
+            doctor.skip(name)
             return False
         if not (root / name).is_dir():
             if args.module:
@@ -119,14 +166,17 @@ def main():
             doctor.bad(f"{name} read-only verifier missing: {checker}")
         elif doctor.command([str(checker), "verify"]):
             doctor.ok(f"{name}: {evidence}")
+            doctor.note(f"{name}: {untested} NOT tested")
         else:
             doctor.bad(f"{name} verification failed; run: {checker} verify")
         return True
 
-    print("pi-setup doctor (no provider calls unless --smoke-model is selected)")
+    report.line("step", "Checking selected modules (no provider calls unless --smoke-model is selected)...")
     if not shutil.which("pi"):
         doctor.bad("Pi CLI is not on PATH. Install Pi first; see pi-setup README prerequisites.")
-    elif not doctor.command(["pi", "--version"], timeout=15, require_output=True):
+    elif doctor.command(["pi", "--version"], timeout=15, require_output=True, show=False):
+        doctor.ok(f"Pi CLI {doctor.output}")
+    else:
         doctor.bad("pi CLI found but --version failed")
 
     checker = shared / "bin/pi-shared-check-deps"
@@ -174,15 +224,15 @@ def main():
                 doctor.command([resolved, *flags], timeout=20, require_output=True)
         if not doctor.failed:
             doctor.ok("Omnigent native-Pi prerequisites verified (standard profile and package imports)")
-        doctor.warn("Native launch, model routing, inference, and advanced Omnigent features NOT tested; "
+        doctor.note("Omnigent: native launch, model routing, inference, and advanced Omnigent features NOT tested; "
                     "see docs/omnigent-compatibility.md")
 
     # Module-owned verifiers honor persisted ports; no fixed HTTP /health fallback.
     gateway = root / "model-gateway"
     gateway_selected = service("model-gateway", gateway / "bin/model-gateway",
-                              "service identity/liveness verified; provider credentials and inference NOT tested")
+                               "service identity/liveness verified", "provider credentials and inference")
     service("local_web_search", root / "local_web_search/scripts/local-search",
-            "local readiness and MCP tool inventory verified; Brave provider request NOT tested")
+            "local readiness and MCP tool inventory verified", "Brave provider request")
 
     cli_config = Path(os.environ.get("PI_LAUNCHER_CONFIG") or os.environ.get("PI_SHARED_CLI_OUT")
                       or home / ".pi/launcher.json").expanduser()
@@ -238,7 +288,7 @@ def main():
         doctor.warn("Generated model catalog not selected; direct Pi provider configuration remains available")
 
     if not selected("browser-worker"):
-        doctor.warn("browser-worker not selected")
+        doctor.skip("browser-worker")
     else:
         browser = shared / "bin/pi-browser-check"
         worker_root = root / "browser-worker"
@@ -291,7 +341,8 @@ def main():
         if not overlay.is_dir():
             doctor.bad(f"Selected overlay missing: {overlay}")
         elif check.is_file() and os.access(check, os.X_OK):
-            print(f"selected overlay: {overlay}")
+            if doctor.verbose:
+                print(f"  - selected overlay: {overlay}")
             if not doctor.command([str(check)], timeout=120):
                 doctor.bad(f"Overlay doctor failed: {overlay}")
         else:
@@ -309,8 +360,9 @@ def main():
         else:
             doctor.command(["zsh", "-f", "-c", 'source "$1"; "$2" --no-tools -p "Reply with exactly PI_OK"',
                             "doctor", str(launchers), f"pi-{args.smoke_model}"], timeout=180, required_line="PI_OK")
-    doctor.warn("Browser execution and fresh interactive shell not tested; successful checks are not full runtime readiness")
-    return int(doctor.failed)
+    doctor.note("Browser execution and fresh interactive shell not tested; successful checks are not full runtime readiness")
+    doctor.summary()
+    return int(bool(doctor.failed))
 
 
 if __name__ == "__main__":

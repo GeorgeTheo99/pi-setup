@@ -204,6 +204,33 @@ def test_success_message_points_at_unified_cli(setup):
     assert "Restart older shells" in r.stdout
 
 
+def test_compact_mode_hides_successful_steps_and_replays_failures(setup, tmp_path):
+    fakebin = Path(setup["env"]["PATH"])
+    for name in ("mktemp", "cat", "rm"):
+        (fakebin / name).symlink_to(shutil.which(name))
+    origin = tmp_path / "shared-origin"
+    _exe(origin / "install.sh", '#!/bin/sh\necho INSTALLER_DETAIL\necho "! INSTALLER_WARNING" >&2\n'
+         'exit "${FAKE_INSTALL_RC:-0}"\n')
+    _git(setup, origin, "commit", "-qam", "noisy installer")
+    verbose = _install(setup)
+    assert verbose.returncode == 0 and "INSTALLER_DETAIL" in verbose.stdout
+    temp, notes = tmp_path / "tmp", tmp_path / "notes"
+    temp.mkdir()
+    notes.touch()
+    compact = {"PI_SETUP_VERBOSE": "0", "PI_SETUP_NOTES_FILE": notes, "TMPDIR": temp}
+    result = _install(setup, "--with-omnigent", **compact)
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "INSTALLER_DETAIL" not in result.stdout + result.stderr
+    assert "! INSTALLER_WARNING" in result.stderr
+    assert "Installing pi-shared..." in result.stdout and "Modules root" not in result.stdout
+    assert "Restart older shells" not in result.stdout  # pi-shared prints the closing guidance
+    assert "native launch and inference were not tested" in notes.read_text()
+    failed = _install(setup, FAKE_INSTALL_RC=3, **compact)
+    assert failed.returncode != 0
+    assert "INSTALLER_DETAIL" in failed.stderr and "pi-shared installer failed" in failed.stderr
+    assert list(temp.iterdir()) == []
+
+
 def test_omnigent_flag_only_adds_prerequisite_check(setup):
     result = _install(setup, "--with-omnigent")
     assert result.returncode == 0, result.stdout + result.stderr

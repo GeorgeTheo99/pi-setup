@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import subprocess
+import sys
 
 import pytest
 from test_cli import cli, isolated
@@ -172,6 +173,67 @@ def test_homebrew_update_reexecs_stable_opt_launcher_with_lock(saved, monkeypatc
     assert [call[0] for call in saved[1]] == [["brew", "update"], ["brew", "upgrade", "--fetch-HEAD", cli.FORMULA]]
     assert seen == [(str(prefix / "bin/pi-shared"), [str(prefix / "bin/pi-shared"), "update", "--modules-only"])]
     assert cli.read_state(allow_incomplete=True)["status"] == "incomplete"
+
+
+def test_homebrew_update_is_compact_unless_verbose(saved, monkeypatch, tmp_path, capsys):
+    prefix = tmp_path / "opt/pi-shared"
+    root = prefix / "libexec"
+    root.mkdir(parents=True)
+    (root / "homebrew.json").write_text(json.dumps({"manager": "homebrew", "formula": cli.FORMULA}))
+    monkeypatch.setattr(cli, "ROOT", root)
+    monkeypatch.setattr(cli.subprocess, "check_output", lambda command, **kw: str(prefix) + "\n")
+    seen = []
+    monkeypatch.setattr(cli.os, "execve", lambda path, command, env: seen.append(command))
+    for verbose in (False, True):
+        saved[1].clear()
+        assert cli.update(args(modules_only=False, verbose=verbose)) == 0
+        assert [kw.get("quiet") for _, kw in saved[1]] == [not verbose, not verbose]
+        assert seen[-1][1:] == ["update", "--modules-only", *(["--verbose"] if verbose else [])]
+    assert "pi-shared package pi-shared is current" in capsys.readouterr().out
+
+
+def test_quiet_run_hides_success_and_replays_failure(capfd):
+    cli.run([sys.executable, "-c", "print('DETAIL')"], quiet=True)
+    assert "DETAIL" not in capfd.readouterr().out
+    with pytest.raises(subprocess.CalledProcessError):
+        cli.run([sys.executable, "-c", "import sys; print('BROKEN'); sys.exit(3)"], quiet=True)
+    assert "BROKEN" in capfd.readouterr().err
+
+
+def test_reexec_does_not_repeat_plan_and_plan_flag_stays_read_only(saved, capsys, monkeypatch):
+    lock = cli.state_path().parent / "update.lock"
+    monkeypatch.setenv("PI_SHARED_UPDATE_LOCK_FD", str(os.open(lock, os.O_RDWR | os.O_CREAT, 0o600)))
+    before = cli.state_path().read_bytes()
+    assert cli.update(args(plan=True)) == 0
+    assert cli.state_path().read_bytes() == before and not saved[1]
+    assert "Update plan" in capsys.readouterr().out
+    assert cli.update(args()) == 0
+    out = capsys.readouterr().out
+    assert "Update plan" not in out and "Update verified" in out
+
+
+def test_update_summarizes_modules_and_prints_one_footer(saved, capsys, monkeypatch):
+    calls = saved[1]
+
+    def child(command, **kw):
+        calls.append((list(map(str, command)), kw))
+        with open(kw["env"]["PI_SETUP_NOTES_FILE"], "a") as notes:
+            notes.write("CHILD LIMITATION NOT tested\n")
+    monkeypatch.setattr(cli, "run", child)
+    assert cli.update(args()) == 0
+    out = capsys.readouterr().out
+    env = calls[0][1]["env"]
+    assert env["PI_SETUP_VERBOSE"] == "0" and not Path(env["PI_SETUP_NOTES_FILE"]).exists()
+    assert "Modules\n  pi-shared  aaaaaaa → bbbbbbb  updated\n" in out
+    assert "Not verified:\n  - CHILD LIMITATION NOT tested\n" in out and "inference and recovery readiness" in out
+    assert out.rstrip().endswith("Restart older shells to discard previously loaded launcher functions.")
+
+
+def test_module_rows_report_unchanged_reinstalled_and_installed():
+    rows = cli.module_rows(["pi-shared", "search", "new"], {"pi-shared": "a" * 40, "search": "c" * 40},
+                           {"pi-shared": "a" * 40, "search": "c" * 40, "new": "d" * 40}, unchanged=["search"])
+    assert rows == [("pi-shared", "aaaaaaa", "reinstalled"), ("search", "ccccccc", "unchanged; not restarted"),
+                    ("new", "ddddddd", "installed")]
 
 
 def test_source_update_fast_forwards_and_reexecs_new_code(saved, monkeypatch, tmp_path):
