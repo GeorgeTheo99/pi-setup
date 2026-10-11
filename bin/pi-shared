@@ -742,7 +742,10 @@ def migrate_mcp(agent_dir, dry_run):
     import capability_setup
     import mcp_setup
     report = capability_setup.result("mcp", "apply")
-    value = lambda label: next((row["value"] for row in report["evidence"] if row["label"] == label), None)
+
+    def value(label):
+        return next((row["value"] for row in report["evidence"] if row["label"] == label), None)
+
     try:
         if not mcp_setup.update_profile(Path(agent_dir), report, dry_run):
             return
@@ -926,7 +929,7 @@ Provider login, gateway onboarding and model downloads are separate steps.
 After setup: pi (use /login and /model); pi models lists configured routes.
 Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.33")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.34")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
     commands.add_parser("peekaboo", help="Standalone opt-in native macOS CLI: plan, status, apply, check")
     commands.add_parser("capability", help="Bounded /setup capability plans, missing-only scaffolds and explicit checks")

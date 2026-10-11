@@ -24,7 +24,12 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.33** keeps stock Pi **0.99.1**. `pi-shared update` now retires a leftover
+Package **0.1.34** keeps stock Pi **0.99.1**. The update's MCP migration no longer
+stops on an existing profile `mcp.json`, extra adapter layers or `imports`: it rebuilds
+the adapter's effective configuration, converts each server independently and lists
+any it leaves out (see [managed updates](mcp.md#managed-updates)).
+
+Package 0.1.33 keeps stock Pi **0.99.1**. `pi-shared update` now retires a leftover
 `pi-mcp-adapter` selection (or `-builtin:mcp`) in the saved profile so Pi's built-in
 `/mcp` loads: it applies the backed-up [MCP migration](mcp.md#managed-updates) when it is
 unambiguous and otherwise leaves the profile unchanged and prints why. An adapter with no
