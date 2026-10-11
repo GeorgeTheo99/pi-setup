@@ -283,10 +283,7 @@ def test_update_migrates_leftover_mcp_adapter_after_modules(saved, capsys):
 
 def test_update_reports_refused_mcp_migration_but_completes(saved, capsys):
     agent = adapter_profile(saved)
-    source = Path.home() / ".config/mcp/mcp.json"
-    source.parent.mkdir(parents=True, exist_ok=True)
-    source.write_text(json.dumps({"mcpServers": {"x": {"command": "x"}}}))
-    (agent / "mcp.json").write_text("{}")
+    (agent / "settings.json").write_text('{"packages":["npm:pi-mcp-adapter"],"extensions":"invalid"}')
     before = (agent / "settings.json").read_bytes()
     assert cli.update(args()) == 0
     assert "MCP: legacy adapter migration NOT applied" in capsys.readouterr().out
@@ -316,7 +313,7 @@ def test_update_prints_migration_warnings(saved, capsys):
     source.write_text(json.dumps({"mcpServers": {"x": {"command": "x"}}}))
     assert cli.update(args(plan=True)) == 0
     out = capsys.readouterr().out
-    assert "(1 server(s))" in out and "    - Native MCP connects enabled servers at session startup" in out
+    assert "(1 server(s))" in out and "    - Migrated servers now start with every Pi session" in out
     assert cli.update(args()) == 0
     out = capsys.readouterr().out
     assert "MCP: migrated" in out and "Private backups contain credentials" in out

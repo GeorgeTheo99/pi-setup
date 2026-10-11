@@ -67,26 +67,54 @@ Review these separately. Native inventory is not proof of current-session loadin
 
 ## Managed updates
 
-`pi-shared update` (0.1.33+) checks the saved profile after its modules verify. When
-that profile still enables `pi-mcp-adapter` or sets `-builtin:mcp`, the update applies
-the same migration under its update lock, using `~/.config/mcp/mcp.json` as the source:
+`pi-shared update` (0.1.34+) checks the saved profile after its modules verify. When
+that profile still enables `pi-mcp-adapter` or sets `-builtin:mcp`, the update migrates
+it under its update lock, with no manual step on the installing machine.
 
-- **No adapter servers** (missing source, or no `mcpServers`): settings change only;
-  no `mcp.json` is created and any existing native file is kept.
-- **Adapter servers and no native `mcp.json`:** full conversion as above.
-- **Anything ambiguous** (existing native target plus adapter servers, extra adapter
-  layers, imports/host discovery, untranslatable policy): nothing is written; the
-  update completes and prints the reason. Resolve it, then rerun the update or use
-  `/setup mcp`. An interrupted write is reported as partial with its rollback manifest.
+While the adapter is selected, built-in MCP never reads `<agent-dir>/mcp.json`; the
+adapter reads it as one of its layers. The update therefore rebuilds the adapter's
+user-level effective configuration exactly as the adapter merged it:
+`~/.config/mcp/mcp.json`, `~/.agents/mcp.json`, `~/.agents/mcp/mcp.json`, then
+`<agent-dir>/mcp.json` (per-field overrides, credentials dropped when a server's URL
+or transport changes), plus `imports` and `hostConfigDiscovery: "on"` host files
+(Cursor, Claude Code/Desktop, Codex, OpenCode, Windsurf). With
+`PI_MCP_CONFIG_MODE=exclusive` in the update environment only the profile file is used.
+Files the adapter could not parse are skipped, as the adapter skipped them. It then:
 
-The update prints the same compatibility warnings the explicit plan shows. Because a
-profile `-builtin:mcp` alone also triggers migration, updates re-enable built-in MCP
-there (settings only; shared adapter servers are not imported); use `pi config` to
-opt out again afterwards if that was deliberate.
+- converts each server independently with the rules below, writing the result to
+  `<agent-dir>/mcp.json` (replacing the adapter-layer file, which is backed up);
+- leaves out any server that needs review (SSE/socket transport, adapter auth or
+  approvals, adapter interpolation, home-prefixed paths, malformed values, ...) and
+  lists it as `Not migrated: NAME (reason)`; its definition stays in its original file;
+- passes a server through unchanged only when it already uses valid native keys and
+  values;
+- drops adapter display settings and adapter-only features (scripting, sampling,
+  elicitation, auto-auth), noting the features;
+- disables the adapter's resources and enables `+builtin:mcp`.
 
-`pi-shared update --plan` previews the outcome. Project settings are not inspected or
-changed by updates. Backups and rollback are identical to explicit migration. Restart
-Pi sessions afterwards.
+Without a selected adapter (only `-builtin:mcp`), only settings change: the profile
+`mcp.json` is kept and shared adapter servers are not imported. Use `pi config` to opt
+out again afterwards if `-builtin:mcp` was deliberate. Not migrated: adapter
+agent-plugin servers (`agentPluginPaths`), package-declared adapter servers, and
+cwd-relative project/VS Code imports. Project settings are not inspected or changed.
+
+The migration is left for later (the adapter stays selected, nothing is written) only
+for invalid profile settings, a symlinked profile `settings.json`/`mcp.json`, shared
+adapter approvals, unknown or malformed shared settings (`toolPrefix`, non-boolean
+`directTools`), or a profile file or converted result over 1 MiB; the update still
+completes and prints the reason. An interrupted write is reported as partial with its
+rollback manifest. `pi-shared update --plan` previews the outcome, including omitted
+servers. Backups and rollback are identical to explicit migration. Restart Pi sessions
+afterwards.
+
+Behavior changes to expect: migrated servers start with every Pi session (the adapter
+started them on demand), and trusted projects' `.pi/mcp.json` files, which native MCP
+also reads, lose adapter-only keys such as `disabled` or tool filters. Project
+`.mcp.json` files, which only the adapter read, stop loading. The update prints these
+warnings whenever it retires the adapter.
+
+`/setup mcp` keeps the strict single-source migration described above, which refuses
+rather than omits.
 
 ## Conversion and conservative restrictions
 

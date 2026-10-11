@@ -338,18 +338,6 @@ def test_missing_adapter_source_migrates_settings_only(fixture):
     assert [Path(r["path"]).name for r in manifest["files"] if r["changed"]] == ["settings.json"]
 
 
-@pytest.mark.parametrize("source", ['{"mcpServers":{}}', "{}"])
-def test_serverless_source_keeps_existing_native_target(fixture, source):
-    f = fixture
-    f.source.write_text(source)
-    (f.agent / "mcp.json").write_text('{"mcpServers":{"kept":{"command":"x"}}}')
-    report = c.result("mcp", "apply")
-    assert m.update_profile(f.agent, report) is True
-    assert (f.agent / "mcp.json").read_text() == '{"mcpServers":{"kept":{"command":"x"}}}'
-    assert native_profile(json.loads((f.agent / "settings.json").read_bytes()))
-    assert f.source.read_text() == source
-
-
 def test_update_profile_migrates_servers_once_and_dry_run_writes_nothing(fixture):
     f = fixture
     before = {str(p): p.read_bytes() for p in f.home.parent.rglob("*") if p.is_file()}
@@ -363,28 +351,6 @@ def test_update_profile_migrates_servers_once_and_dry_run_writes_nothing(fixture
     assert m.update_profile(f.agent, c.result("mcp", "apply")) is False
     assert (f.agent / "settings.json").read_bytes() == settings
     assert len(list((f.agent / ".mcp-migration").iterdir())) == 1
-
-
-def test_update_profile_ignores_project_scope_but_refuses_conflicts_without_writes(fixture):
-    f = fixture
-    (f.agent / "mcp.json").write_text('{"mcpServers":{}}')
-    settings = (f.agent / "settings.json").read_bytes()
-    with pytest.raises(p.SetupError, match="Native target already exists"):
-        m.update_profile(f.agent, c.result("mcp", "apply"))
-    for source in ('{"imports":["claude-code"]}', '{"settings":{"agentPluginPaths":["/x"]}}',
-                   '{"settings":{"hostConfigDiscovery":"on"}}'):
-        f.source.write_text(source)
-        with pytest.raises(p.SetupError, match="manual migration|discovery must be off"):
-            m.update_profile(f.agent, c.result("mcp", "apply"))
-    f.source.unlink()
-    for target in ('{"imports":["claude-code"]}', '{"mcpServers":{"x":{"command":"x","disabled":true}}}'):
-        (f.agent / "mcp.json").write_text(target)
-        with pytest.raises(p.SetupError, match="Native target already exists"):
-            m.update_profile(f.agent, c.result("mcp", "apply"))
-        _, code = run(f)
-        assert code == 1
-    assert (f.agent / "settings.json").read_bytes() == settings
-    assert not (f.agent / ".mcp-migration").exists()
 
 
 def test_update_profile_noop_for_native_or_missing_profile(fixture):
@@ -433,12 +399,242 @@ def test_failed_attempt_before_writes_does_not_block_retry(fixture, monkeypatch)
     assert native_profile(json.loads((f.agent / "settings.json").read_bytes()))
 
 
-def test_explicit_missing_source_and_incompatible_native_values_refused(fixture):
+def migrate(f):
+    report = c.result("mcp", "apply")
+    assert m.update_profile(f.agent, report) is True
+    return json.loads((f.agent / "mcp.json").read_bytes())["mcpServers"], report
+
+
+def test_update_converts_adapter_profile_layer_and_keeps_backup(fixture):
     f = fixture
-    report, code = run(f, opts={"mode": "migrate", "sourceConfig": str(f.home / "typo.json")})
+    f.source.write_text('{"mcpServers":{}}')
+    layer = '{"mcpServers":{"kept":{"command":"x","disabled":true,"includeTools":["a"]}},"autoEnableCodemode":false}'
+    (f.agent / "mcp.json").write_text(layer)
+    native, _ = migrate(f)
+    assert native["kept"]["enabled"] is False and native["kept"]["toolExposure"] == {"a": "codemode"}
+    assert json.loads((f.agent / "mcp.json").read_bytes())["autoEnableCodemode"] is False
+    backups = [b.read_text() for b in (f.agent / ".mcp-migration").glob("*/*.original")]
+    assert layer in backups and native_profile(json.loads((f.agent / "settings.json").read_bytes()))
+
+
+def test_update_merges_layers_like_the_adapter_and_drops_rebound_credentials(fixture):
+    f = fixture
+    f.source.write_text('{"mcpServers":{"docs":{"url":"https://a.invalid/mcp","headers":{"Authorization":"Bearer A"}},"s":{"command":"old"}}}')
+    (f.home / ".agents").mkdir()
+    (f.home / ".agents/mcp.json").write_text('{"mcpServers":{"docs":{"url":"https://b.invalid/mcp"}}}')
+    (f.agent / "mcp.json").write_text('{"mcpServers":{"s":{"args":["--x"]}}}')
+    native, _ = migrate(f)
+    assert native["docs"]["url"] == "https://b.invalid/mcp" and "headers" not in native["docs"]
+    assert native["s"]["command"] == "old" and native["s"]["args"] == ["--x"]
+
+
+def test_update_resolves_imports_discovery_and_jsonc(fixture):
+    f = fixture
+    f.source.write_text('{"imports":["claude-code"], // adapter-written\n "mcpServers":{"own":{"command":"own"},},}')
+    (f.home / ".claude.json").write_text('{"mcpServers":{"claude":{"type":"stdio","command":"c"},"own":{"command":"ignored"}}}')
+    native, _ = migrate(f)
+    assert native["claude"]["command"] == "c" and native["own"]["command"] == "own"
+    (f.agent / "mcp.json").unlink()
+    (f.agent / "settings.json").write_text('{"packages":["npm:pi-mcp-adapter"]}')
+    f.source.write_text('{"settings":{"hostConfigDiscovery":"on"}}')
+    (f.home / ".cursor").mkdir()
+    (f.home / ".cursor/mcp.json").write_text('{"mcpServers":{"cur":{"url":"https://c.invalid/mcp"}}}')
+    native, _ = migrate(f)
+    assert set(native) == {"claude", "own", "cur"}  # Discovery reads every host file.
+
+
+def test_update_omits_only_unsafe_servers_and_reports_them(fixture):
+    f = fixture
+    f.source.write_text(json.dumps({"mcpServers": {"ok": {"command": "x"}, "sse": {"url": "https://s.invalid", "type": "sse"},
+                                                   "home": {"command": "~/bin/x"}, "auth": {"url": "https://a.invalid", "auth": "oauth"}}}))
+    native, report = migrate(f)
+    assert set(native) == {"ok"}
+    text = " ".join(report["warnings"])
+    assert all(f"Not migrated: {name}" in text for name in ("sse", "home", "auth")) and "SECRET" not in text
+
+
+def test_update_shared_approval_policy_keeps_adapter_without_writes(fixture):
+    f = fixture
+    f.source.write_text('{"settings":{"approveTools":true},"mcpServers":{"a":{"command":"a"}}}')
+    settings = (f.agent / "settings.json").read_bytes()
+    with pytest.raises(p.SetupError, match="approvals"):
+        m.update_profile(f.agent, c.result("mcp", "apply"))
+    assert (f.agent / "settings.json").read_bytes() == settings and not (f.agent / "mcp.json").exists()
+
+
+def test_update_drops_adapter_features_and_display_settings_but_keeps_servers(fixture):
+    f = fixture
+    f.source.write_text('{"settings":{"scriptMode":true,"autoAuth":true,"toolResultRendering":"compact","agentPluginPaths":["/p"]},'
+                        '"mcpServers":{"a":{"command":"a"}}}')
+    native, report = migrate(f)
+    text = " ".join(report["warnings"])
+    assert set(native) == {"a"} and "scriptMode, autoAuth" in text and "agentPluginPaths" in text
+
+
+def test_disabled_builtin_without_adapter_keeps_profile_mcp_untouched(fixture):
+    f = fixture
+    (f.agent / "settings.json").write_text('{"extensions":["-builtin:mcp"]}')
+    (f.agent / "mcp.json").write_text('{"imports":["cursor"]}')
+    assert m.update_profile(f.agent, c.result("mcp", "apply")) is True
+    assert (f.agent / "mcp.json").read_text() == '{"imports":["cursor"]}'
+
+
+def test_explicit_missing_source_config_refused(fixture):
+    report, code = run(fixture, opts={"mode": "migrate", "sourceConfig": str(fixture.home / "typo.json")})
     assert code == 1 and "missing" in " ".join(report["errors"])
+
+
+def test_update_exclusive_mode_reads_only_profile_layer(fixture, monkeypatch):
+    f = fixture
+    monkeypatch.setenv("PI_MCP_CONFIG_MODE", "exclusive")
+    (f.agent / "mcp.json").write_text('{"mcpServers":{"mine":{"command":"m"}}}')
+    native, report = migrate(f)
+    assert set(native) == {"mine"} and "exclusive" in " ".join(report["warnings"])
+
+
+@pytest.mark.parametrize("source", [
+    '{"imports":[["cursor"],{}],"mcpServers":{"ok":{"command":"x"}}}',
+    '{"mcpServers":{"ok":{"command":"x"},"bad":{"command":"y","lifecycle":["eager"]},"worse":{"url":"https://w.invalid","type":{}}}}',
+])
+def test_update_survives_malformed_values(fixture, source):
+    f = fixture
+    f.source.write_text(source)
+    native, _ = migrate(f)
+    assert "ok" in native and not {"bad", "worse"} & set(native)
+
+
+@pytest.mark.parametrize("layer", ['{"mcpServers":{"n":{"command":"x","timeout":NaN}}}', "dir"])
+def test_update_skips_unparseable_or_unreadable_layers_with_note(fixture, layer):
+    f = fixture
+    if layer == "dir":
+        f.source.unlink()
+        f.source.mkdir()
+    else:
+        f.source.write_text(layer)
+    report = c.result("mcp", "apply")
+    assert m.update_profile(f.agent, report) is True
+    assert "unreadable or invalid" in " ".join(report["warnings"])
+    assert native_profile(json.loads((f.agent / "settings.json").read_bytes()))
+
+
+def test_update_jsonc_comma_before_comment(fixture):
+    f = fixture
+    f.source.write_text('{"mcpServers":{"a":{"command":"x"}, // trailing\n}}')
+    native, _ = migrate(f)
+    assert set(native) == {"a"}
+
+
+def test_update_codex_toml_and_opencode_mapping(fixture):
+    f = fixture
+    f.source.write_text('{"imports":["codex","opencode","vscode"]}')
+    (f.home / ".codex").mkdir()
+    (f.home / ".codex/config.toml").write_text('[mcp_servers.cx]\ncommand = "cx"\nargs = ["-v"]\n'
+                                               '[mcp_servers.tok]\nurl = "https://t.invalid"\nbearer_token_env_var = "T"\n')
+    (f.home / ".config/opencode").mkdir(parents=True)
+    (f.home / ".config/opencode/opencode.json").write_text(json.dumps({"mcp": {
+        "loc": {"type": "local", "command": ["oc", "--x"]},
+        "sec": {"type": "remote", "url": "https://o.invalid", "oauth": {"clientId": "id", "clientSecret": "SECRET"}},
+        "off": {"type": "remote", "url": "https://o.invalid", "oauth": False}}}))
+    native, report = migrate(f)
+    assert native["cx"]["args"] == ["-v"] and native["loc"] == {**native["loc"], "command": "oc", "args": ["--x"]}
+    assert not {"tok", "sec", "off"} & set(native) and "SECRET" not in json.dumps(native)
+    text = " ".join(report["warnings"])
+    assert "Not migrated: sec" in text and "Project-relative imports" in text
+
+
+def test_update_pass_through_requires_valid_native_values(fixture):
+    f = fixture
+    f.source.write_text(json.dumps({"mcpServers": {
+        "good": {"command": "x", "timeout": 5, "enabled": False, "exposure": "direct"},
+        "bad": {"command": "x", "timeout": "x", "enabled": "no"},
+        "env": {"command": "x", "env": {"K": "$TOKEN"}, "timeout": 5}}}))
+    native, _ = migrate(f)
+    assert native == {"good": {"command": "x", "timeout": 5, "enabled": False, "exposure": "direct"}}
+
+
+def test_update_refuses_symlinked_profile_file(fixture):
+    f = fixture
+    (f.home / "real.json").write_text("{}")
+    (f.agent / "mcp.json").symlink_to(f.home / "real.json")
+    with pytest.raises(p.SetupError, match="symlink"):
+        m.update_profile(f.agent, c.result("mcp", "apply"))
+
+
+def test_update_reads_invalid_utf8_layers_like_node(fixture):
+    f = fixture
+    f.source.write_text('{"mcpServers":{"a":{"command":"x"}}}')
+    (f.agent / "mcp.json").write_bytes(b'{"mcpServers":{"a":{"disabled":true}},"note":"caf\xe9"}')
+    native, _ = migrate(f)
+    assert native["a"]["enabled"] is False
+
+
+def test_update_warns_about_project_files_even_without_servers(fixture):
+    f = fixture
     f.source.unlink()
-    for server in ({"command": "~/bin/x"}, {"command": "x", "env": {"K": "$TOKEN"}}, {"url": "https://x.invalid/${HOST}"}):
-        (f.agent / "mcp.json").write_text(json.dumps({"mcpServers": {"s": server}}))
-        with pytest.raises(p.SetupError, match="Native target already exists"):
-            m.update_profile(f.agent, c.result("mcp", "apply"))
+    report = c.result("mcp", "apply")
+    assert m.update_profile(f.agent, report) is True
+    assert any("Trusted projects' .pi/mcp.json" in w for w in report["warnings"])
+
+
+def test_update_omits_overflowing_and_unhashable_values(fixture):
+    f = fixture
+    f.source.write_text('{"mcpServers":{"ok":{"command":"x"},"inf":{"command":"y","requestTimeoutMs":1e400},'
+                        '"big":{"command":"z","requestTimeoutMs":' + "9" * 400 + '},"exp":{"command":"w","exposure":["direct"]}}}')
+    native, report = migrate(f)
+    assert set(native) == {"ok"}
+    assert all(f"Not migrated: {n}" in " ".join(report["warnings"]) for n in ("inf", "big", "exp"))
+
+
+def test_update_oversized_import_stops_at_first_candidate(fixture, monkeypatch):
+    f = fixture
+    monkeypatch.setattr(m, "IMPORT_LIMIT", 30)  # Source layer fits; the first claude-code candidate does not.
+    f.source.write_text('{"imports":["claude-code"]}')
+    (f.home / ".claude").mkdir()
+    (f.home / ".claude/mcp.json").write_text('{"mcpServers":{"big":{"command":"b"}}}')
+    (f.home / ".claude/claude_desktop_config.json").write_text('{"mcpServers":{"later":{"command":"l"}}}')
+    report = c.result("mcp", "apply")
+    assert m.update_profile(f.agent, report) is True
+    assert not (f.agent / "mcp.json").exists() and "exceeds 64 MiB" in " ".join(report["warnings"])
+
+
+def test_explicit_keeps_native_target_with_oauth_callback(fixture):
+    f = fixture
+    f.source.unlink()
+    target = {"mcpServers": {"o": {"url": "https://o.invalid/mcp", "oauth": {"clientId": "id", "callbackPort": 8765,
+                                                                          "callbackUrl": "http://127.0.0.1:8765/cb"}}}}
+    (f.agent / "mcp.json").write_text(json.dumps(target))
+    report, code = approve(f)
+    assert code == 0, report
+    assert json.loads((f.agent / "mcp.json").read_bytes()) == target
+    assert not m.native_oauth({"callbackUrl": "http://127.0.0.1:1/cb", "callbackPort": 2})
+    assert not m.native_oauth({"callbackUrl": "https://evil.invalid/cb"})
+
+
+@pytest.mark.parametrize("server", [
+    {"url": "https://o.invalid", "oauth": {"callbackUrl": "http://localhost:99999/cb"}},
+    {"url": "https://o.invalid", "oauth": {"callbackPort": None}},
+    {"url": "https://o.invalid", "oauth": {"callbackUrl": None}},
+    {"command": "x", "type": None, "timeout": 5},
+    {"url": "http://a b/", "timeout": 5},
+    {"url": "https://o.invalid", "oauth": {"x": "HUGE"}},
+])
+def test_update_pass_through_matches_pi_validation(fixture, server):
+    f = fixture
+    f.source.write_text(json.dumps({"mcpServers": {"ok": {"command": "x"}, "bad": server}}).replace('"HUGE"', "1e999"))
+    native, report = migrate(f)
+    assert set(native) == {"ok"} and "Not migrated: bad" in " ".join(report["warnings"])
+
+
+def test_update_valid_native_oauth_passes_through(fixture):
+    f = fixture
+    server = {"url": "https://o.invalid/mcp", "timeout": 5, "oauth": {"callbackUrl": "http://[::1]:8080/cb", "callbackPort": 8080, "extra": "kept"}}
+    f.source.write_text(json.dumps({"mcpServers": {"o": server}}))
+    native, _ = migrate(f)
+    assert native == {"o": server}
+
+
+def test_update_deeply_nested_layer_refuses_clearly(fixture):
+    f = fixture
+    f.source.write_text("[" * 100000 + "]" * 100000)
+    with pytest.raises(p.SetupError, match="nested too deeply"):
+        m.update_profile(f.agent, c.result("mcp", "apply"))
