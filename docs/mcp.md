@@ -1,6 +1,6 @@
 # Official Pi MCP and adapter migration
 
-Pi is pinned to **0.99.1**, which includes native MCP. New setups do **not** need
+Pi is pinned to **1.0.3**, which includes native MCP. New setups do **not** need
 `pi-mcp-adapter`. Native personal servers live in `<agent-dir>/mcp.json`; trusted
 project servers live in `.pi/mcp.json`. Native `/mcp` manages them, and tools are
 named `mcp__SERVER__TOOL`. An extension registering `/mcp` replaces the native
@@ -187,7 +187,7 @@ the adapter settings restores its old routing; no npm reinstall is needed.
 
 ## Runtime verification (separate, explicit execution)
 
-After static check, restart Pi **0.99.1** in the selected profile. A runtime upgrade
+After static check, restart Pi **1.0.3** in the selected profile. A runtime upgrade
 requires a restart, not just `/reload`. For configuration-only changes `/reload`
 can reconnect, but migration is best verified in a fresh session.
 

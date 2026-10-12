@@ -278,7 +278,7 @@ def mcp_target(args, report):
     if backend == "native":
         if adapters or "-builtin:mcp" in settings.get("extensions", []):
             raise SetupError("Selected profile still loads the adapter or disables native MCP. Run capability mcp migration (or review profile settings) first; Peekaboo never silently switches backends.")
-        report["warnings"].append("Official Pi 0.99.1 MCP: codemode tool discovery, but the server connects at session startup (not adapter lazy lifecycle). Project/CLI/custom extension overrides remain unverified.")
+        report["warnings"].append("Official Pi 1.0.3 MCP: codemode tool discovery, but the server connects at session startup (not adapter lazy lifecycle). Project/CLI/custom extension overrides remain unverified.")
     else:
         report["warnings"].append("Legacy adapter MCP configuration preserved explicitly; this is not native Pi MCP readiness. Use capability mcp mode migrate to review profile migration before switching. No adapter is installed or uninstalled here.")
     report["actions"].append("MCP backend: " + backend + "; configuration: " + str(config))

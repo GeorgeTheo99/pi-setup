@@ -282,6 +282,16 @@ def test_exclusions_are_idempotent_and_scope_exact():
     assert updated == original and count == 0
 
 
+def test_namespace_clashing_server_names_fail_closed():
+    servers = {"read-file": {"command": "a"}, "read_file": {"command": "b"}, "other": {"command": "c"}}
+    with pytest.raises(m.SetupError, match="differ only"):
+        m.translate({"mcpServers": servers})
+    notes = []
+    converted, _ = m.convert_servers(servers, {}, notes)
+    assert set(converted) == {"other"}
+    assert sum("differs from another server only" in note for note in notes) == 2
+
+
 def pb_args(f, action="plan", **kw):
     return SimpleNamespace(**({"action": action, "config": None, "agent_dir": str(f.agent), "backend": None,
         "binary": None, "mode": None, "bridge_socket": None, "install": False, "yes": False, "expected_plan": None} | kw))
@@ -296,7 +306,7 @@ def test_peekaboo_new_profile_defaults_native(fixture, monkeypatch):
     binary.chmod(0o700)
     report, code = p.operate(pb_args(f, binary=str(binary)), lock)
     assert code == 0, report
-    assert "Official Pi 0.99.1" in " ".join(report["warnings"])
+    assert "Official Pi 1.0.3" in " ".join(report["warnings"])
     monkeypatch.setattr(p, "startup", lambda *a: p.read_file(binary, p.MAX_EXPANDED, executable=True)[1])
     applied, code = p.operate(pb_args(f, "apply", binary=str(binary), yes=True, expected_plan=report["planId"]), lock)
     assert code == 0, applied
@@ -310,7 +320,7 @@ def test_peekaboo_after_migration_uses_native_even_legacy_source_retained(fixtur
     report, code = p.operate(pb_args(fixture), lock)
     assert code == 0, report
     assert report["evidence"]["configuration"] == "matching"
-    assert "Official Pi 0.99.1" in " ".join(report["warnings"])
+    assert "Official Pi 1.0.3" in " ".join(report["warnings"])
 
 
 def test_peekaboo_legacy_not_silently_switched(fixture):

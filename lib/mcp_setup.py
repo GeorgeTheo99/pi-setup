@@ -1,4 +1,4 @@
-"""Offline, profile-scoped migration from pi-mcp-adapter to Pi 0.99.1 MCP.
+"""Offline, profile-scoped migration from pi-mcp-adapter to Pi 1.0.3 MCP.
 
 Never execute servers/credential commands, uninstall packages, or edit the source.
 Ambiguous adapter policy fails closed rather than becoming an ignored native key.
@@ -228,7 +228,7 @@ def native_oauth(oauth):
 
 MIGRATION_WARNINGS = [
     "Native MCP connects enabled servers at session startup, not lazily; idle lifecycle, cache, proxy/script APIs and adapter UI settings are not retained. Approval includes this lifecycle change.",
-    "Native names are mcp__SERVER__TOOL; prompts, MCP Apps, sampling/elicitation and adapter permission brokers are not migrated. Review dependent extensions and instructions before restarting.",
+    "Native names are mcp__SERVER__TOOL with - replaced by _; prompts, MCP Apps, sampling/elicitation and adapter permission brokers are not migrated. Review dependent extensions and instructions before restarting.",
     "Native protocol negotiation and progress-reset request timeouts differ; HTTP uses streamable HTTP only, never SSE fallback. No server is started or protocol compatibility verified here.",
     "Resources use native generic resource tools, not adapter generated tools. OAuth/keychain tokens are not read, copied or deleted; sign in separately with pi mcp login if needed."]
 
@@ -238,9 +238,23 @@ def translate(document):
     servers = document.get("mcpServers")
     if not isinstance(servers, dict) or not servers or len(servers) > 128:
         raise SetupError("Migration needs a nonempty bounded mcpServers object.")
+    if namespace_clashes(servers):
+        raise SetupError("Server names that differ only in '-' and '_' share one native MCP namespace; rename one before migrating.")
     warnings = list(MIGRATION_WARNINGS)
     result = {name: translate_server(name, source, defaults, warnings) for name, source in servers.items()}
     return {"mcpServers": result}, list(dict.fromkeys(warnings))
+
+
+def namespace_clashes(names):
+    """Names Pi 1.0 rejects: its mcp__SERVER namespace replaces '-' with '_'."""
+    seen, clashes = {}, set()
+    for name in names:
+        if isinstance(name, str):
+            key = name.replace("-", "_")
+            if key in seen:
+                clashes |= {seen[key], name}
+            seen.setdefault(key, name)
+    return clashes
 
 
 def translate_server(name, source, defaults, warnings):
@@ -519,7 +533,11 @@ def convert_servers(servers, settings, notes):
         notes.append("Adapter-only features have no native equivalent and are not carried over: " + ", ".join(dropped) + ".")
     warnings, converted = [], {}
     malformed = (SetupError, TypeError, ValueError, AttributeError, OverflowError)
+    clashes = namespace_clashes(servers)
     for name, entry in servers.items():
+        if name in clashes:
+            notes.append(f"Not migrated: {_label(name)} (name differs from another server only in '-' and '_')")
+            continue
         try:
             converted[name] = translate_server(name, entry, defaults, warnings)
             continue
@@ -563,13 +581,13 @@ def inspect(paths, opts, report, selection):
     handoff(report, "Explicit native connection check (starts every enabled server)", ["env", "PI_CODING_AGENT_DIR=" + str(agent), "pi", "mcp", "list"])
     handoff(report, "Native server manager after restarting the selected profile", "/mcp", "pi")
     if opts["mode"] != "migrate":
-        report["nextSteps"].append("Use mode migrate to preview adapter conversion, or add new servers with pi mcp add in this profile. No adapter installation is needed on Pi 0.99.1.")
+        report["nextSteps"].append("Use mode migrate to preview adapter conversion, or add new servers with pi mcp add in this profile. No adapter installation is needed on Pi 1.0.3.")
         return
     source = path_value(opts.get("sourceConfig", str(Path.home() / ".config/mcp/mcp.json")))
     if "sourceConfig" in opts and object_file(source)[1] is None:
         raise SetupError("Adapter source configuration is missing.")
     plan_migration(agent, source, paths["project"], selection, report)
-    report["nextSteps"].append("Stop affected Pi sessions before apply. After apply restart Pi 0.99.1, use /mcp, then separately approve pi mcp list and any OAuth login. Rollback instructions and hashes are in the private backup manifest.")
+    report["nextSteps"].append("Stop affected Pi sessions before apply. After apply restart Pi 1.0.3, use /mcp, then separately approve pi mcp list and any OAuth login. Rollback instructions and hashes are in the private backup manifest.")
 
 
 def plan_migration(agent, source, project, selection, report):

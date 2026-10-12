@@ -60,7 +60,7 @@ explicitly warn that `pi-shared update` applies immediately without confirmation
 can upgrade the CLI/runtime and all saved modules, and may rewire profiles/restart
 shared services. It is not dependency-only repair. Broad setup preserves saved choices and can affect shared services and
 profile wiring beyond the chosen capability; review its full plan and consent
-there. Native MCP is built into Pi 0.99.1; the default MCP handoff no longer installs
+there. Native MCP is built into Pi 1.0.3; the default MCP handoff no longer installs
 an adapter. MCP servers and external packages run with full machine permissions:
 review source before starting/installing them. Do not execute source dependency commands against
 package-manager-owned installed artifacts; use the owning managed update/release

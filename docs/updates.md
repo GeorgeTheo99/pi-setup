@@ -24,7 +24,15 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.35** keeps stock Pi **0.99.1** and makes setup, update and status
+Package **0.1.36** moves to stock Pi **1.0.3**, the newest release available
+through the Databricks npm proxy, after its complete lockset passed a fresh-cache
+installation. Pi 1.0 renames the Azure provider `azure-openai-responses` to
+`azure` (rename it in `auth.json`, `models.json` and `settings.json`, or `/login`
+again), moves fullscreen transcript top/bottom to `Ctrl+Home`/`Ctrl+End`, and
+normalizes MCP namespaces (`-` becomes `_`, so `mcp__my-server__x` is now
+`mcp__my_server__x`); server names that differ only in `-` and `_` are rejected,
+and MCP migration now refuses or skips them instead of writing a config Pi rejects.
+Package 0.1.35 keeps stock Pi 0.99.1 and makes setup, update and status
 output [compact by default](#output); `--verbose` restores full detail.
 Package 0.1.34 keeps stock Pi 0.99.1. The update's MCP migration no longer
 stops on an existing profile `mcp.json`, extra adapter layers or `imports`: it rebuilds

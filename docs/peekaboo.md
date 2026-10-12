@@ -26,7 +26,7 @@ pi-shared peekaboo apply --mode bridge --bridge-socket /absolute/path/to/bridge.
 pi-shared peekaboo check --json
 ```
 
-New setups default to official **Pi 0.99.1 native MCP**, writing
+New setups default to official **Pi 1.0.3 native MCP**, writing
 `<agent-dir>/mcp.json`. `--agent-dir ABS` selects the profile; otherwise
 `PI_CODING_AGENT_DIR` or `~/.pi/agent` is used. Detected legacy adapter declarations
 or an existing legacy config without a native target retain the adapter route with
