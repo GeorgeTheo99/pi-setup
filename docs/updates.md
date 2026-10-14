@@ -114,13 +114,17 @@ receipts, require manual reconciliation rather than automatic migration/removal.
 normalized endpoint, absolute key-file reference and explicit private-HTTP
 opt-in. This optional schema-2 field is backward-compatible; key contents are
 never copied into receipts. Update preserves that connection and its managed
-outputs and invokes shared `pi-gateway check` **offline only**. It does not fetch
-the remote catalog, provision credentials, claim remote service ownership,
-restart remote services, or test remote readiness/inference. To explicitly
-refresh authenticated discovery, rerun `pi-shared setup --mode existing-gateway --yes`
-(repeat optional module selections); omitted connection arguments and
-saved custom paths are retained. `status` uses the same offline connection
-check. Connection/check failures cannot produce a completed receipt.
+outputs and invokes shared `pi-gateway check` offline, then `pi-gateway probe`:
+one authenticated `GET /v1/models/canonical` that warns when the gateway rejects
+the client key (for example after the operator rotates or retires it), is
+unreachable, or lists models that differ from the local catalog. The probe is
+advisory: it never writes the catalog, provisions credentials, claims remote
+service ownership, restarts remote services, tests inference or fails the update.
+To explicitly refresh authenticated discovery, rerun `pi-shared setup --mode existing-gateway --yes`
+(repeat optional module selections) or the printed `pi-gateway connect` command;
+omitted connection arguments and saved custom paths are retained. `status` runs
+the same check and probe and exits nonzero on a rejected key. Connection/check
+failures cannot produce a completed receipt.
 
 Receipts from 0.1.2 and earlier lack some of this information. They remain readable
 by `status`, but `update` refuses to guess their missing settings. Run setup once

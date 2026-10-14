@@ -5,8 +5,15 @@ import ipaddress
 import os
 from pathlib import Path
 import re
+import shlex
 import stat
+import subprocess
 import urllib.parse
+
+import report
+
+# `pi-gateway probe` exit codes, owned by pi-shared lib/pi_gateway.py.
+PROBE_OK, PROBE_DRIFT, PROBE_AUTH_REJECTED, PROBE_UNREACHABLE = 0, 3, 4, 5
 
 
 def normalize_url(url):
@@ -80,3 +87,29 @@ def command(data, action):
             "--url", gateway["url"], "--key-file", gateway["key_file"],
             "--cli-out", data["cli_file"],
             *(["--allow-private-http"] if gateway["allow_private_http"] else [])]
+
+
+def probe(data, env):
+    """One authenticated catalog read (no writes, no inference); reports, never raises."""
+    try:
+        result = subprocess.run([str(a) for a in command(data, "probe")], env=env, capture_output=True,
+                                text=True, errors="replace", timeout=40, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        report.line("warn", "Remote gateway probe did not run; authentication NOT verified.")
+        return None
+    detail = " ".join((result.stdout + result.stderr).split())
+    connect = shlex.join(str(a) for a in command(data, "connect"))
+    if result.returncode == PROBE_OK:
+        report.line("ok", detail)
+    elif result.returncode == PROBE_AUTH_REJECTED:
+        report.line("fail", "Remote gateway REJECTED this Mac's client key; every gateway model will fail with 401.")
+        print(f"  Write a new consumer key from the gateway operator into {data['external_gateway']['key_file']}"
+              f" (mode 0600), then run:\n    {connect}", flush=True)
+    elif result.returncode == PROBE_UNREACHABLE:
+        report.line("warn", "Remote gateway unreachable (offline or Tailscale down?); authentication NOT verified.")
+    elif result.returncode == PROBE_DRIFT:
+        report.line("warn", "Remote gateway catalog changed since the last connect; refresh with:")
+        print(f"    {connect}\n" + "\n".join(row for row in result.stdout.splitlines() if row.startswith("  ")), flush=True)
+    else:
+        report.line("warn", f"Remote gateway probe failed; authentication NOT verified. {detail}")
+    return result.returncode

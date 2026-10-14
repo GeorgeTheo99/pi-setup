@@ -209,11 +209,41 @@ def test_update_and_status_check_offline_without_remote_ownership(gateway, monke
     assert after["external_gateway"] == before["external_gateway"]
     assert after["services"] == {} and after["cli_file"] == before["cli_file"]
     calls.clear()
-    cli.status()
+    assert cli.status() == 0
     assert calls[0][0] == [str(ROOT / "bin/doctor"), "--module", "pi-shared"]
     assert calls[1][0][1] == "check"
-    assert "remote reachability, authentication and inference NOT tested" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "External gateway inference NOT tested (catalog read only)" in output
+    assert "probe did not run; authentication NOT verified" in output  # fixture has no pi-gateway
     assert not any("connect" in cmd or "brew" in cmd for cmd, _ in calls)
+
+
+@pytest.mark.parametrize("code,stdout,status_code,expected", [
+    (0, "Remote gateway OK: client key accepted; local catalog matches 2 available models.", 0, "client key accepted"),
+    (3, "  1 new on gateway: org/new\nRemote gateway OK, but the local catalog is stale.", 0, "1 new on gateway: org/new"),
+    (4, "", 1, "REJECTED this Mac's client key"),
+    (5, "", 0, "unreachable"),
+    (2, "", 0, "probe failed; authentication NOT verified"),
+], ids=["ok", "drift", "rejected", "unreachable", "old-helper"])
+def test_status_and_update_probe_outcomes(gateway, monkeypatch, capsys, code, stdout, status_code, expected):
+    _, calls, key = gateway
+    cli.setup(remote(key)); calls.clear()
+    probes = []
+    def fake(args, **kw):
+        probes.append(args)
+        return subprocess.CompletedProcess(args, code, stdout, "pi-gateway: detail")
+    monkeypatch.setattr(cli.existing_gateway.subprocess, "run", fake)
+    capsys.readouterr()
+    assert cli.status() == status_code
+    output = capsys.readouterr().out
+    assert expected in output
+    if code in (3, 4):
+        assert "pi-gateway connect --url https://gateway.example --key-file" in output
+    assert key.read_text().strip() not in output
+    cli.update(update_args())  # warnings never fail an update
+    assert cli.read_state()["status"] == "module-checks-passed"
+    assert [p[1] for p in probes] == ["probe", "probe"]
+    assert all("connect" not in cmd for cmd, _ in calls)
 
 
 def test_failed_offline_update_check_stays_incomplete(gateway, monkeypatch):
@@ -308,7 +338,7 @@ def test_subprocess_setup_rerun_update_status_with_offline_workflow_stubs(tmp_pa
            "data = json.loads(p.read_text())  # bootstrap must precede connect\n"
            "expected = {'url': flags['--url'], 'key_file': flags['--key-file']}\n"
            "if action == 'connect': p.write_text(json.dumps(expected))\n"
-           "elif action == 'check': assert data == expected\n"
+           "elif action in ('check', 'probe'): assert data == expected\n"
            "else: raise AssertionError('unexpected gateway operation')\n")
 
     def invoke(*args):
@@ -332,6 +362,6 @@ def test_subprocess_setup_rerun_update_status_with_offline_workflow_stubs(tmp_pa
     assert receipt["cli_file"] == str(config) and receipt["services"] == {}
     commands = [json.loads(line) for line in log.read_text().splitlines()]
     gateway_actions = [c[1] for c in commands if Path(c[0]).name == "pi-gateway"]
-    assert gateway_actions == ["connect", "connect", "check", "check"]
+    assert gateway_actions == ["connect", "connect", "check", "probe", "check", "probe"]
     assert "model-gateway" not in receipt["modules"]
     assert key.read_text().strip() not in log.read_text()

@@ -733,9 +733,11 @@ def status(require_omnigent=False, verbose=False):
         command.append("--require-omnigent")
     with report.Session(verbose) as out:
         run(command, env={**env, **out.env})
+        rejected = False
         if data.get("external_gateway"):
             run(existing_gateway.command(data, "check"), env=env)
-            out.note("External gateway configuration checked OFFLINE; remote reachability, authentication and inference NOT tested.")
+            rejected = existing_gateway.probe(data, env) == existing_gateway.PROBE_AUTH_REJECTED
+            out.note("External gateway inference NOT tested (catalog read only).")
         if data.get("mode") == "direct":
             out.note("Direct-only configuration checked OFFLINE; native provider authentication and inference NOT tested.")
         if data.get("search"):
@@ -745,7 +747,7 @@ def status(require_omnigent=False, verbose=False):
             out.note("oMLX is separately managed; status does not test its service or model inference.")
         out.note("Last selected modules only; provider/model/recovery readiness is not implied.")
         out.footer()
-    return 0
+    return 1 if rejected else 0
 
 
 @contextmanager
@@ -834,8 +836,8 @@ def update(args):
         if data.get("mode") == "direct":
             print("  Preserve direct-only policy and native Pi authentication/model settings; no gateway catalog/profile or oMLX.")
         if data.get("external_gateway"):
-            print(f"  Preserve external gateway: {data['external_gateway']['url']}; check configuration OFFLINE only.")
-            print("  No remote catalog refresh or remote service operations. Rerun setup to explicitly refresh discovery.")
+            print(f"  Preserve external gateway: {data['external_gateway']['url']}; check configuration offline, then one")
+            print("  authenticated catalog read to warn about a rejected key or stale catalog (no refresh, no inference).")
         if data.get("omlx") == "install":
             print("  Also update owned Homebrew oMLX; restart it only if its installed version changes.")
         print("  Update owned CLI/runtime; apply changed selected services; refresh dependencies/shortcuts; verify.")
@@ -942,6 +944,7 @@ def update(args):
                 direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
             if data.get("external_gateway"):
                 run(existing_gateway.command(data, "check"), env=env)
+                existing_gateway.probe(data, env)
             migrate_mcp(data["agent_dir"], dry_run=False)
             data["runtime_versions"] = update_support.runtime_versions()
             data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])

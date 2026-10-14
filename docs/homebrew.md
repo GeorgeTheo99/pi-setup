@@ -268,10 +268,12 @@ A failed connection leaves the receipt incomplete. Rerun setup in
 `existing-gateway` mode to retry or explicitly refresh the catalog; saved
 endpoint/key-file/HTTP choices and custom paths are retained when omitted.
 Optional module flags still follow normal setup selection rules. Use
-`pi-shared update` for routine maintenance: it retains the connection and runs
-`pi-gateway check` offline, never remote discovery. Status uses the same offline
-connection check and does not claim remote reachability, authentication or
-inference readiness.
+`pi-shared update` for routine maintenance: it retains the connection, runs
+`pi-gateway check` offline, then `pi-gateway probe`: one authenticated catalog
+read that warns about a rejected (rotated/retired) key, an unreachable gateway
+or a stale local catalog without changing anything. Status runs the same check
+and probe and exits nonzero when the gateway rejects the key; neither tests
+inference.
 
 ## Unified `pi` CLI before model configuration
 
