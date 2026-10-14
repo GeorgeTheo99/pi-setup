@@ -24,7 +24,11 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.36** moves to stock Pi **1.0.3**, the newest release available
+Package **0.1.37** keeps stock Pi 1.0.3. `status` and `update` now probe an
+existing remote gateway once (authenticated catalog read) and warn when it rejects
+the client key, is unreachable or lists different models; `status` exits nonzero
+on a rejected key.
+Package 0.1.36 moves to stock Pi **1.0.3**, the newest release available
 through the Databricks npm proxy, after its complete lockset passed a fresh-cache
 installation. Pi 1.0 renames the Azure provider `azure-openai-responses` to
 `azure` (rename it in `auth.json`, `models.json` and `settings.json`, or `/login`
