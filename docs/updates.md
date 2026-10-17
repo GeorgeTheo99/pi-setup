@@ -24,7 +24,11 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.37** keeps stock Pi 1.0.3. `status` and `update` now probe an
+Package **0.1.38** keeps stock Pi 1.0.3. `pi-shared peekaboo` pins official
+Peekaboo **4.9.5**: new `--install-app` installs/launches the signed Peekaboo.app
+in `/Applications`, Bridge entries keep the full catalog (no browser exclusion),
+and `--install` upgrades a setup-managed 4.5.0 entry. See [Peekaboo](peekaboo.md).
+Package 0.1.37 keeps stock Pi 1.0.3. `status` and `update` now probe an
 existing remote gateway once (authenticated catalog read) and warn when it rejects
 the client key, is unreachable or lists different models; `status` exits nonzero
 on a rejected key.
