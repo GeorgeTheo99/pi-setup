@@ -294,7 +294,7 @@ def test_namespace_clashing_server_names_fail_closed():
 
 def pb_args(f, action="plan", **kw):
     return SimpleNamespace(**({"action": action, "config": None, "agent_dir": str(f.agent), "backend": None,
-        "binary": None, "mode": None, "bridge_socket": None, "install": False, "yes": False, "expected_plan": None} | kw))
+        "binary": None, "mode": None, "bridge_socket": None, "install": False, "install_app": False, "yes": False, "expected_plan": None} | kw))
 
 
 def test_peekaboo_new_profile_defaults_native(fixture, monkeypatch):

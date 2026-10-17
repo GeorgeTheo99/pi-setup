@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import ctypes
+import errno
 import hashlib
 import http.client
 import json
@@ -10,6 +12,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import platform
+import plistlib
 import re
 import selectors
 import signal
@@ -22,21 +25,25 @@ import time
 import urllib.parse
 import urllib.request
 import uuid
+from xml.parsers.expat import ExpatError
 
-VERSION = "4.5.0"
-URL = "https://github.com/openclaw/Peekaboo/releases/download/v4.5.0/peekaboo-macos-arm64.tar.gz"
-SHA256 = "a65323e5c79a0094c860199c86f99248c60955d9803ac2fa7a62b18494186beb"
+VERSION = "4.9.5"
+RELEASE = "https://github.com/openclaw/Peekaboo/releases/download/v" + VERSION + "/"
+URL = RELEASE + "peekaboo-macos-arm64.tar.gz"
+SHA256 = "2f435c736459a3d30279835038fc7e67028875be837f467c87521ea14da3a9ee"
+APP_URL = RELEASE + "Peekaboo-" + VERSION + ".app.zip"
+APP_SHA256 = "d176301b0ef4b695c11cbdb8c0bdbbc71f47f866f76c734ddad8343ab5f93e38"
 TEAM = "FWJYW4S8P8"
 IDENTIFIER = "boo.peekaboo.peekaboo"
+APP_IDENTIFIER = "boo.peekaboo.mac"
+APP = Path("/Applications/Peekaboo.app")
 MAX_CONFIG = 1024 * 1024
 MAX_ARCHIVE = 150 * 1024 * 1024
 MAX_EXPANDED = 300 * 1024 * 1024
 RATE = 25_000_000  # 200 Mbps, one download at a time under the shared lock.
-WARNING = ("Compatibility pin 4.5.0 lacks newer input-safety fixes (including modifier cleanup). "
-           "4.6.0 has a known CLI startup failure; no automatic upgrade/downgrade is used.")
+LAUNCH_WAIT = 20  # Seconds for a launched app to publish its Bridge socket.
 HOST_WARNING = ("Direct permission evidence belongs to this setup process, not the later Pi host; "
-                "Bridge evidence must identify the Bridge source. App availability is unverified: "
-                "socket presence does not prove an app is installed or listening. "
+                "Bridge evidence must identify the Bridge source. Socket presence does not prove the app is listening. "
                 "MCP and desktop readiness are not tested; no permissions are requested or granted.")
 
 
@@ -46,7 +53,7 @@ class SetupError(RuntimeError):
 
 def result(action):
     return {"schemaVersion": 2, "component": "peekaboo", "action": action, "ok": False,
-            "summary": "Peekaboo operation not completed.", "actions": [], "warnings": [WARNING, HOST_WARNING],
+            "summary": "Peekaboo operation not completed.", "actions": [], "warnings": [HOST_WARNING],
             "errors": [], "nextSteps": [], "evidence": {
                 "mode": "direct", "bridgeSocketPath": None,
                 "bridgeSocketState": "not-applicable", "permissionSource": None,
@@ -164,12 +171,10 @@ def entry(binary, mode="direct", bridge_socket=None, backend="adapter"):
     if backend == "native":
         value = {"command": str(binary), "args": value["args"],
                  "timeout": 30, "enabled": True, "exposure": "codemode"}
-    if mode == "bridge":
-        value["env"] = {"PEEKABOO_DISABLE_TOOLS": "browser"}
     return value
 
 
-def socket_snapshot(path, report):
+def socket_snapshot(path, report, guidance=True):
     """Inspect only filesystem metadata; never connect to or open the socket."""
     report["evidence"]["bridgeSocketState"] = "invalid"
     try:
@@ -177,9 +182,9 @@ def socket_snapshot(path, report):
             info = os.stat(path.name, dir_fd=fd, follow_symlinks=False)
     except FileNotFoundError:
         report["evidence"]["bridgeSocketState"] = "missing"
-        guidance = "Start the separately installed Peekaboo desktop app yourself with its Bridge enabled at the selected socket, then recheck. Setup never installs or launches the app."
-        if guidance not in report["nextSteps"]:
-            report["nextSteps"].append(guidance)
+        step = "Open Peekaboo.app and keep it running so its Bridge socket exists, then recheck."
+        if guidance and step not in report["nextSteps"]:
+            report["nextSteps"].append(step)
         return None
     if (not stat.S_ISSOCK(info.st_mode) or info.st_uid != os.getuid() or
             info.st_nlink != 1 or info.st_mode & 0o022):
@@ -228,7 +233,8 @@ def select_route(args, existing, report, backend="adapter"):
         if socket is None:
             raise SetupError("Bridge mode requires --bridge-socket with a normalized absolute path.")
         report["evidence"]["bridgeSocketPath"] = str(socket)
-        socket_stamp = socket_snapshot(socket, report)
+        # With --install-app, apply launches the app itself; no manual start is needed.
+        socket_stamp = socket_snapshot(socket, report, guidance=not args.install_app)
     else:
         report["evidence"]["bridgeSocketState"] = "not-applicable"
         socket_stamp = None
@@ -237,6 +243,41 @@ def select_route(args, existing, report, backend="adapter"):
 
 def managed():
     return Path.home() / ".local/share/peekaboo" / VERSION
+
+
+def managed_legacy(path):
+    """An older setup-managed CLI whose entry an explicit --install may replace; never a newer one."""
+    return (path is not None and path.name == "peekaboo" and path.parent.parent == managed().parent and
+            re.fullmatch(r"\d+(?:\.\d+){1,3}", path.parent.name) is not None and
+            version_tuple(path.parent.name) < version_tuple(VERSION))
+
+
+def version_tuple(value):
+    return tuple(int(part) for part in value.split("."))
+
+
+def app_version(app=None):
+    """Offline Info.plist read; None when absent. Never accepts an older or foreign bundle."""
+    app = app or APP
+    if app.is_symlink():
+        raise SetupError(f"{app} is a symlink; resolve it manually.")
+    if not app.exists():
+        return None
+    try:
+        fd = os.open(app / "Contents/Info.plist", os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+        with os.fdopen(fd, "rb") as source:
+            data = source.read(MAX_CONFIG + 1) if stat.S_ISREG(os.fstat(fd).st_mode) else b""
+        info = plistlib.loads(data) if len(data) <= MAX_CONFIG else None
+    except (OSError, plistlib.InvalidFileException, ValueError, ExpatError):
+        info = None
+    version = info.get("CFBundleShortVersionString") if isinstance(info, dict) else None
+    if (not isinstance(info, dict) or info.get("CFBundleIdentifier") != APP_IDENTIFIER or
+            not isinstance(version, str) or not re.fullmatch(r"\d+(?:\.\d+){1,3}", version)):
+        raise SetupError(f"{app} is not the official Peekaboo app; resolve it manually.")
+    if version_tuple(version) < version_tuple(VERSION):
+        raise SetupError(f"Installed Peekaboo.app {version} is older than {VERSION}; update it from its menu "
+                         "(Check for Updates…) or remove it, then create a fresh plan.")
+    return version
 
 
 def discover():
@@ -306,9 +347,23 @@ def inspect(args, report):
             raise SetupError("Another Peekaboo entry already exists; resolve it manually.")
     if "peekaboo" in servers and existing is None:
         raise SetupError("Existing Peekaboo entry conflicts with the exact direct/Bridge policy.")
+    replacing = False
+    if (isinstance(existing, dict) and isinstance(existing.get("command"), str) and
+            managed_legacy(path_value(existing["command"]))):
+        legacy = Path(existing["command"]).parent.name
+        if not args.install:
+            raise SetupError(f"Setup-managed Peekaboo {legacy} is outdated; rerun /setup peekaboo and choose the "
+                             f"recommended setup (or plan with --install --mode bridge|direct) to upgrade to {VERSION}.")
+        if not args.mode:
+            raise SetupError("Replacing an outdated Peekaboo entry requires an explicit --mode.")
+        report["actions"].append(f"Replace the existing entry for setup-managed Peekaboo {legacy}, including any "
+                                 "custom settings in it; its version directory is left in place.")
+        existing = None
+        replacing = True
     mode, socket, socket_stamp = select_route(args, existing, report, backend)
     configured = path_value(existing["command"]) if existing is not None else None
-    binary = path_value(args.binary) if args.binary else configured or discover()
+    # An upgrade targets the managed pin, never another discovered (e.g. Homebrew) CLI.
+    binary = path_value(args.binary) if args.binary else configured or (managed() / "peekaboo" if replacing else discover())
     if existing is not None and binary != configured:
         raise SetupError("Selected binary conflicts with the existing Peekaboo entry.")
     if existing is not None:
@@ -322,7 +377,12 @@ def inspect(args, report):
         report["evidence"]["binaryPresent"] = binary_stamp is not None
         if args.binary and binary_stamp is None:
             raise SetupError("--binary must select an existing executable.")
-    if args.install:
+    install_cli = args.install
+    if args.install and binary == managed() / "peekaboo" and binary_stamp is not None and not args.binary:
+        # A pinned CLI from an earlier, partially completed setup is reused, not re-downloaded.
+        install_cli = False
+        report["actions"].append(f"Reuse the already installed managed CLI {VERSION}.")
+    elif args.install:
         if binary_stamp is not None:
             raise SetupError("--install is for a missing binary only; existing binaries are never overwritten or downgraded.")
         if args.binary or (configured is not None and configured != managed() / "peekaboo"):
@@ -335,31 +395,41 @@ def inspect(args, report):
         read_file(managed() / "peekaboo", MAX_EXPANDED, executable=True)
         binary = managed() / "peekaboo"
         report["evidence"]["binaryPath"] = str(binary)
-        report["actions"].append("Download and verify official arm64 CLI 4.5.0 into the private version directory.")
+        report["actions"].append(f"Download and verify official arm64 CLI {VERSION} into the private version directory.")
     elif not binary_stamp:
         report["nextSteps"].append("Select an existing signed CLI with --binary, or review a new plan with --install.")
-    if binary and report["evidence"]["configuration"] == "missing":
-        report["actions"].append("Add the Peekaboo Bridge stdio entry with only browser tools disabled; preserve other MCP settings."
+    app = None
+    if args.install_app:
+        if mode != "bridge":
+            raise SetupError("--install-app requires Bridge mode: the desktop app is the permission owner.")
+        if platform.system() != "Darwin":
+            raise SetupError("Peekaboo.app installation requires macOS.")
+        app = app_version()
+        report["actions"].append(f"Download and verify official Peekaboo.app {VERSION} (Developer ID {TEAM}) into {APP}."
+                                 if app is None else f"Verify the installed Peekaboo.app {app} signature.")
+        report["actions"].append("Launch Peekaboo.app and wait for its Bridge socket.")
+    if binary and report["evidence"]["configuration"] != "matching":
+        report["actions"].append("Add the full-catalog Peekaboo Bridge stdio entry; preserve other MCP settings."
                                  if mode == "bridge" else
                                  "Add the full-catalog Peekaboo direct stdio entry; preserve other MCP settings.")
     if binary:
         report["actions"].append("On apply: verify Developer ID and exact CLI version before writing configuration.")
     selection = {"config": str(config), "configStamp": config_stamp, "binary": str(binary) if binary else None,
                  "binaryStamp": binary_stamp, "runtimeStamp": runtime_stamp,
-                 "install": args.install, "version": VERSION, "sha256": SHA256,
+                 "install": install_cli, "version": VERSION, "sha256": SHA256,
+                 "installApp": args.install_app, "app": app, "appSha256": APP_SHA256,
                  "mode": mode, "bridgeSocketPath": str(socket) if socket else None,
-                 "bridgeSocketStamp": socket_stamp,
+                 # Launching the app may recreate the socket, so only bind it without --install-app.
+                 "bridgeSocketStamp": None if args.install_app else socket_stamp,
                  "entry": entry(binary, mode, socket, backend) if binary else None, "schemaVersion": 2,
                  "backend": backend, "profileStamp": profile_stamp}
     report["planId"] = hashlib.sha256(json.dumps(selection, sort_keys=True).encode()).hexdigest()
     return config, document, selection
 
 
-def run_bounded(command, timeout=15, label="Read-only probe", *, native_only=False):
+def run_bounded(command, timeout=15, label="Read-only probe"):
     """Bound combined child output and runtime; no shell, inherited secrets, or DYLD overrides."""
     env = {"HOME": str(Path.home()), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}
-    if native_only:
-        env["PEEKABOO_DISABLE_TOOLS"] = "browser"
     process = subprocess.Popen([str(x) for x in command], stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env,
                                cwd="/", start_new_session=True)
@@ -398,12 +468,14 @@ def run_bounded(command, timeout=15, label="Read-only probe", *, native_only=Fal
         process.stderr.close()
 
 
-def signature(binary, identifier=IDENTIFIER):
+def signature(binary, identifier=IDENTIFIER, deep=False):
     requirement = (f'=anchor apple generic and identifier "{identifier}" and '
                    f'certificate leaf[subject.OU] = "{TEAM}" and '
                    'certificate 1[field.1.2.840.113635.100.6.2.6] exists and '
                    'certificate leaf[field.1.2.840.113635.100.6.1.13] exists')
-    code, _, _ = run_bounded(["/usr/bin/codesign", "--verify", "--strict", "-R", requirement, binary])
+    deep_flag = ["--deep"] if deep else []
+    code, _, _ = run_bounded(["/usr/bin/codesign", "--verify", *deep_flag, "--strict", "-R", requirement, binary],
+                             timeout=60 if deep else 15)
     if code:
         raise SetupError("Developer ID signature/identifier verification failed; executable was not started.")
 
@@ -418,17 +490,19 @@ def startup(binary, report):
     library = binary.parent / "libswiftCompatibilitySpan.dylib"
     _, library_before = read_file(library, MAX_EXPANDED, executable=True)
     if library_before:
-        signature(library, "com.apple.dt.runtime.swiftCompatibilitySpan")
+        signature(library, IDENTIFIER + ".libswiftCompatibilitySpan")
     if read_file(binary, MAX_EXPANDED, executable=True)[1] != before:
         raise SetupError("Executable changed during signature verification.")
     report["evidence"]["runnable"] = "no"
     code, out, _ = run_bounded([binary, "--version"])
     if code:
         raise SetupError("CLI startup failed (possibly incompatible Swift runtime); configuration was not written.")
-    # Do not accept 4.6 or a misleading embedded version substring.
-    if not re.fullmatch(rb"(?:Peekaboo\s+)?v?4\.5\.0(?:\s+\([^\r\n]*\))?\s*", out.strip()):
+    # Do not accept another release or a misleading embedded version substring.
+    pattern = rb"(?:Peekaboo\s+)?v?" + re.escape(VERSION.encode()) + rb"(?:\s+\([^\r\n]*\))?\s*"
+    if not re.fullmatch(pattern, out.strip()):
         report["evidence"]["runnable"] = "no"
-        raise SetupError("CLI version is not the supported 4.5.0 compatibility pin; no downgrade was attempted.")
+        raise SetupError(f"CLI version is not the supported {VERSION} pin; rerun setup with --install to "
+                         "upgrade a setup-managed CLI. No downgrade was attempted.")
     if (read_file(binary, MAX_EXPANDED, executable=True)[1] != before or
             read_file(library, MAX_EXPANDED, executable=True)[1] != library_before):
         raise SetupError("Executable/runtime changed during startup validation.")
@@ -440,7 +514,7 @@ def permissions(binary, report):
     bridge = report["evidence"]["mode"] == "bridge"
     route = ["--bridge-socket", report["evidence"]["bridgeSocketPath"]] if bridge else ["--no-remote"]
     command = [binary, "permissions", "status", *route, "--json"]
-    code, out, _ = run_bounded(command, native_only=True) if bridge else run_bounded(command)
+    code, out, _ = run_bounded(command)
     data = parse_json(out)
     if not isinstance(data, dict) or data.get("success") is not True or not isinstance(data.get("data"), dict):
         raise SetupError("Permission probe did not return a successful structured snapshot.")
@@ -483,10 +557,11 @@ class OfficialRedirect(urllib.request.HTTPRedirectHandler):
         return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
-def download(destination):
+def download(destination, url=None, sha256=None):
+    url, sha256 = url or URL, sha256 or SHA256
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), OfficialRedirect())
     digest, size, started = hashlib.sha256(), 0, time.monotonic()
-    with opener.open(URL, timeout=15) as response, destination.open("xb") as target:
+    with opener.open(url, timeout=15) as response, destination.open("xb") as target:
         if response.status != 200:
             raise SetupError("Release download failed.")
         while True:
@@ -503,17 +578,17 @@ def download(destination):
             delay = size / RATE - (time.monotonic() - started)
             if delay > 0:
                 time.sleep(delay)
-    if digest.hexdigest() != SHA256:
+    if digest.hexdigest() != sha256:
         raise SetupError("Release archive SHA256 mismatch; nothing was installed.")
 
 
-def download_bounded(destination):
+def download_bounded(destination, url=None, sha256=None):
     # Socket timeouts alone do not bound DNS or an entire redirect chain. Isolate
     # only the transfer in a killable child with a hard wall-clock deadline.
     script = ("import runpy,sys; from pathlib import Path; "
-              "runpy.run_path(sys.argv[1])['download'](Path(sys.argv[2]))")
+              "runpy.run_path(sys.argv[1])['download'](Path(sys.argv[2]), sys.argv[3], sys.argv[4])")
     code, _, _ = run_bounded([sys.executable, "-I", "-B", "-c", script,
-                              str(Path(__file__).resolve()), str(destination)],
+                              str(Path(__file__).resolve()), str(destination), url or URL, sha256 or SHA256],
                              timeout=135, label="Release download")
     if code:
         raise SetupError("Release download/integrity validation failed; nothing was installed.")
@@ -575,6 +650,61 @@ def install(report):
     report["evidence"]["binaryPresent"] = True
 
 
+def rename_exclusive(source, target):
+    """rename(2) silently replaces an empty directory; RENAME_EXCL never replaces anything."""
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.renamex_np(os.fsencode(source), os.fsencode(target), ctypes.c_uint(0x4)) != 0:
+        code = ctypes.get_errno()
+        raise OSError(code, os.strerror(code), str(target))
+
+
+def install_app(report):
+    """Install the pinned app only when absent; an existing app is verified, never replaced."""
+    if app_version() is not None:
+        signature(APP, APP_IDENTIFIER, deep=True)
+        return
+    with directory(managed().parent, create=True):
+        with tempfile.TemporaryDirectory(prefix=".peekaboo-app-", dir=managed().parent) as temp:
+            stage = Path(temp)
+            download_bounded(stage / "app.zip", APP_URL, APP_SHA256)
+            payload = stage / "payload"
+            # ditto preserves the bundle's signed symlinks, modes and metadata.
+            code, _, _ = run_bounded(["/usr/bin/ditto", "-x", "-k", stage / "app.zip", payload],
+                                     timeout=120, label="App extraction")
+            staged = payload / APP.name
+            if code or [child.name for child in payload.iterdir()] != [APP.name] or staged.is_symlink():
+                raise SetupError("App archive has unexpected contents; nothing was installed.")
+            signature(staged, APP_IDENTIFIER, deep=True)
+            if app_version(staged) != VERSION:
+                raise SetupError("App archive version mismatch; nothing was installed.")
+            try:
+                rename_exclusive(staged, APP)
+            except FileExistsError:
+                raise SetupError(f"{APP} appeared during installation; it was not replaced.") from None
+            except OSError as exc:
+                if exc.errno not in {errno.EACCES, errno.EPERM, errno.EXDEV, errno.EROFS}:
+                    raise
+                raise SetupError(f"Cannot move Peekaboo.app into {APP.parent}; install Peekaboo.app {VERSION} "
+                                 "from the official release yourself, then rerun setup.") from None
+    report["actions"].append(f"Installed verified Peekaboo.app {VERSION} in {APP}.")
+
+
+def launch_app(socket, report):
+    code, _, _ = run_bounded(["/usr/bin/open", APP], label="App launch")
+    if code:
+        raise SetupError("Peekaboo.app did not launch; open it yourself, then recheck.")
+    deadline = time.monotonic() + LAUNCH_WAIT
+    while not socket.exists() and time.monotonic() < deadline:
+        time.sleep(0.25)
+    report["actions"].append("Launched Peekaboo.app.")
+    if socket.exists():
+        socket_snapshot(socket, report)
+    else:
+        report["evidence"]["bridgeSocketState"] = "missing"
+        report["nextSteps"].append(f"Peekaboo.app launched, but its Bridge socket did not appear within {LAUNCH_WAIT} seconds. "
+                                   "Confirm the app is running, then run check.")
+
+
 def write_config(config, document, selection):
     document.setdefault("mcpServers", {})["peekaboo"] = selection["entry"]
     payload = (json.dumps(document, indent=2, ensure_ascii=True, allow_nan=False) + "\n").encode()
@@ -610,7 +740,8 @@ def refresh_after_failure(args, report):
     current = result(args.action)
     try:
         inspect(argparse.Namespace(**(vars(args) | {
-            "install": False, "binary": report["evidence"]["binaryPath"] or args.binary})), current)
+            "install": False, "install_app": False,
+            "binary": report["evidence"]["binaryPath"] or args.binary})), current)
     except (RuntimeError, OSError, ValueError):
         pass
     for key in ("binaryPath", "binaryPresent", "configuration", "mode", "bridgeSocketPath", "bridgeSocketState"):
@@ -640,24 +771,35 @@ def operate(args, lock):
                 config, document, selection = inspect(args, current)
                 if current["planId"] != args.expected_plan:
                     raise SetupError("State changed while acquiring the lock; create a fresh plan.")
-                if args.install:
+                def unchanged():
+                    if read_file(config, MAX_CONFIG)[1] != selection["configStamp"]:
+                        raise SetupError("Configuration changed after planning; no configuration was overwritten.")
+                    if mcp_target(args, result(args.action))[2] != selection["profileStamp"]:
+                        raise SetupError("MCP profile/backend selection changed during validation; create a fresh plan.")
+
+                if selection["install"]:
                     install(report)
                 binary = Path(selection["binary"])
                 verified = startup(binary, report)
-                if not args.install and (verified != selection["binaryStamp"] or
+                if not selection["install"] and (verified != selection["binaryStamp"] or
                         read_file(binary.parent / "libswiftCompatibilitySpan.dylib", MAX_EXPANDED, executable=True)[1] != selection["runtimeStamp"]):
                     raise SetupError("Binary/runtime changed after planning; no configuration was written.")
-                if selection["mode"] == "bridge" and socket_snapshot(Path(selection["bridgeSocketPath"]), report) != selection["bridgeSocketStamp"]:
+                if args.install_app:
+                    unchanged()  # Before touching /Applications, not only before the config write.
+                    install_app(report)
+                    # Launching may (re)create the socket, so the plan's socket stamp cannot apply.
+                    launch_app(Path(selection["bridgeSocketPath"]), report)
+                elif selection["mode"] == "bridge" and socket_snapshot(Path(selection["bridgeSocketPath"]), report) != selection["bridgeSocketStamp"]:
                     raise SetupError("Bridge socket changed after planning; create a fresh plan.")
-                if read_file(config, MAX_CONFIG)[1] != selection["configStamp"]:
-                    raise SetupError("Configuration changed after planning; no configuration was overwritten.")
-                if mcp_target(args, result(args.action))[2] != selection["profileStamp"]:
-                    raise SetupError("MCP profile/backend selection changed during validation; create a fresh plan.")
+                unchanged()
                 if report["evidence"]["configuration"] != "matching":
                     write_config(config, document, selection)
                     report["actions"].append("Wrote Peekaboo configuration atomically; unrelated settings preserved.")
                 report["evidence"]["configuration"] = "matching"
             report["summary"] = "Peekaboo CLI validated and configured; MCP, permissions and desktop not tested."
+            if selection["mode"] == "bridge":
+                report["nextSteps"].append("In System Settings > Privacy & Security, allow Peekaboo under Accessibility and "
+                                           "Screen & System Audio Recording, and keep Peekaboo.app running.")
             report["nextSteps"].extend(["Run pi-shared peekaboo check --json for explicit read-only CLI/permission probes.",
                 "Restart Pi or /reload, then discover Peekaboo through /mcp in the selected backend; recheck permissions from that actual host."])
         elif args.action == "check":
@@ -698,7 +840,7 @@ def main(argv, lock):
             raise SetupError("Invalid Peekaboo arguments; use pi-shared peekaboo --help.")
 
     parser = Parser(prog="pi-shared peekaboo", description="Standalone Peekaboo CLI configuration (not a setup module).",
-                    epilog="Plans/status are offline. Apply needs --yes and a matching plan ID. No TCC requests, services, app installation/launch, provider setup or desktop actions.")
+                    epilog="Plans/status are offline. Apply needs --yes and a matching plan ID. Only --install-app installs/launches Peekaboo.app. No TCC requests, services, provider setup or desktop actions.")
     parser.add_argument("action", choices=["plan", "status", "apply", "check"])
     parser.add_argument("--json", action="store_true", help="Emit only the schema-v2 JSON result on stdout")
     parser.add_argument("--config", metavar="ABS", help="Explicit MCP JSON path; default selected profile mcp.json for new native setups")
@@ -707,15 +849,16 @@ def main(argv, lock):
     parser.add_argument("--binary", metavar="ABS", help="Existing signed executable; never search PATH")
     parser.add_argument("--mode", choices=["direct", "bridge"], help="Preserve an exact existing route when omitted; otherwise default direct")
     parser.add_argument("--bridge-socket", metavar="ABS", help="Bridge socket path; required for a new Bridge entry, never auto-discovered")
-    parser.add_argument("--install", action="store_true", help="Explicit missing-binary-only 4.5.0 Apple Silicon installation")
+    parser.add_argument("--install", action="store_true", help=f"Install the pinned {VERSION} Apple Silicon CLI when missing or replacing an older setup-managed CLI")
+    parser.add_argument("--install-app", action="store_true", help=f"Bridge only: install Peekaboo.app {VERSION} into /Applications when missing, then launch it")
     parser.add_argument("--yes", action="store_true", help="Approve apply; no interactive confirmation")
-    parser.add_argument("--expected-plan", metavar="SHA256", help="Plan ID from plan with identical binary/config/install/mode/socket choices")
+    parser.add_argument("--expected-plan", metavar="SHA256", help="Plan ID from plan with identical binary/config/install/app/mode/socket choices")
     try:
         args = parser.parse_args(argv)
         if args.action != "apply" and (args.yes or args.expected_plan):
             raise SetupError("--yes and --expected-plan are only valid for apply.")
-        if args.action not in {"plan", "apply"} and args.install:
-            raise SetupError("--install is only valid for plan/apply.")
+        if args.action not in {"plan", "apply"} and (args.install or args.install_app):
+            raise SetupError("--install and --install-app are only valid for plan/apply.")
         # The frontend cancels our process group with SIGTERM. Child probes use
         # their own groups for bounded cleanup, so unwind their finally blocks
         # rather than letting TERM orphan a download or probe.

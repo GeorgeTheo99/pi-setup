@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import plistlib
 import socket
 import stat
 import subprocess
@@ -45,7 +46,7 @@ def binary(home):
 
 def args(action="plan", **kwargs):
     return SimpleNamespace(**({"action": action, "config": None, "binary": None,
-                              "install": False, "yes": False, "expected_plan": None,
+                              "install": False, "install_app": False, "yes": False, "expected_plan": None,
                               "mode": None, "bridge_socket": None,
                               "backend": "adapter", "agent_dir": None} | kwargs))
 
@@ -77,19 +78,20 @@ def approve(**kwargs):
 def probes(monkeypatch):
     calls = []
 
-    def run(command, timeout=15, *, native_only=False):
+    def run(command, timeout=15, label=None):
         calls.append([str(x) for x in command])
         if command[0] == "/usr/bin/codesign":
             assert command[command.index("-R") + 1].startswith("=anchor apple generic"), "codesign needs '=' for an inline requirement, otherwise it opens a file"
             return 0, b"", b""
         if command[-1] == "--version":
-            return 0, b"Peekaboo 4.5.0 (main/abc, built: fixture)\n", b""
-        if native_only:
+            return 0, f"Peekaboo {p.VERSION} (main/abc, built: fixture)\n".encode(), b""
+        bridge = "--bridge-socket" in command
+        if bridge:
             assert command[1:4] == ["permissions", "status", "--bridge-socket"]
             assert command[-1] == "--json" and len(command) == 6
         else:
             assert command[1:] == ["permissions", "status", "--no-remote", "--json"]
-        return 0, permission_output(source="bridge" if native_only else "local"), b""
+        return 0, permission_output(source="bridge" if bridge else "local"), b""
 
     monkeypatch.setattr(p, "run_bounded", run)
     return calls
@@ -399,7 +401,7 @@ def test_explicit_install_plan_pure_and_existing_refused(home, binary):
     plan, code = operate(install=True)
     assert not code and plan["evidence"]["binaryPath"] == str(p.managed() / "peekaboo")
     assert not p.managed().exists()
-    assert "input-safety" in " ".join(plan["warnings"])
+    assert any(p.VERSION in action for action in plan["actions"])
     assert operate(binary=str(binary), install=True)[1]
 
 
@@ -474,7 +476,7 @@ def test_download_has_hard_deadline_and_no_raw_child_output(home, monkeypatch):
     def run(command, timeout, label):
         assert timeout == 135 and label == "Release download"
         assert command[:4] == [sys.executable, "-I", "-B", "-c"]
-        assert command[-1] == str(home / "archive.tgz")
+        assert command[-3:] == [str(home / "archive.tgz"), p.URL, p.SHA256]
         return 1, b"secret", b"private-url"
 
     monkeypatch.setattr(p, "run_bounded", run)
@@ -582,8 +584,7 @@ def test_subprocess_timeout_and_output_bound(home, monkeypatch):
         p.run_bounded([sys.executable, "-c", "print('x'*10000)"])
 
 
-@pytest.mark.parametrize("native_only", [False, True])
-def test_probe_environment_does_not_inherit_secrets(home, monkeypatch, native_only):
+def test_probe_environment_does_not_inherit_secrets(home, monkeypatch):
     monkeypatch.setenv("PRIVATE_KEY", "secret")
     monkeypatch.setenv("DYLD_LIBRARY_PATH", "secret")
     monkeypatch.setenv("PEEKABOO_DISABLE_TOOLS", "all")
@@ -595,12 +596,9 @@ def test_probe_environment_does_not_inherit_secrets(home, monkeypatch, native_on
         return original(*args, **kwargs)
 
     monkeypatch.setattr(p.subprocess, "Popen", spawn)
-    code, out, _ = p.run_bounded([sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"], native_only=native_only)
+    code, out, _ = p.run_bounded([sys.executable, "-c", "import os,json; print(json.dumps(dict(os.environ)))"])
     assert code == 0 and b"secret" not in out and b"DYLD" not in out
-    expected = {"HOME": str(home), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}
-    if native_only:
-        expected["PEEKABOO_DISABLE_TOOLS"] = "browser"
-    assert captured == [expected]
+    assert captured == [{"HOME": str(home), "PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"}]
 
 
 @pytest.mark.parametrize("argv", [["plan", "--unexpected", "secret", "--json"],
@@ -680,18 +678,18 @@ def test_exact_route_preserved_and_idempotent(home, binary, probes, mode, bridge
     assert all("permissions" not in call and "mcp" not in call for call in probes)
 
 
-def test_new_bridge_entry_is_native_only(home, binary, probes, bridge_socket):
+def test_new_bridge_entry_has_full_catalog(home, binary, probes, bridge_socket):
     original = {"other": {"url": "https://example.invalid", "env": {"TOKEN": "secret"}}}
     config = write_config(home, {"mcpServers": original, "setting": True})
     report, code = approve(binary=str(binary), mode="bridge", bridge_socket=str(bridge_socket))
     assert code == 0, report
     expected = {"command": str(binary), "args": ["mcp", "--bridge-socket", str(bridge_socket), "--allow-foreground"],
-                "env": {"PEEKABOO_DISABLE_TOOLS": "browser"}, "lifecycle": "lazy-keep-alive",
+                "lifecycle": "lazy-keep-alive",
                 "requestTimeoutMs": 30000, "directTools": False}
     assert json.loads(config.read_text()) == {"mcpServers": original | {"peekaboo": expected}, "setting": True}
     assert "secret" not in json.dumps(report)
     assert report["evidence"]["toolCount"] is None
-    assert any("browser tools disabled" in action for action in report["actions"])
+    assert any("full-catalog Peekaboo Bridge" in action for action in report["actions"])
 
 
 @pytest.mark.parametrize("mode", [None, "direct"])
@@ -732,7 +730,7 @@ def test_no_automatic_route_migration(home, binary, probes, bridge_socket, exist
 
 
 @pytest.mark.parametrize("change", [
-    {"env": {}}, {"env": {"PEEKABOO_DISABLE_TOOLS": "browser,agent"}},
+    {"env": {}}, {"env": {"PEEKABOO_DISABLE_TOOLS": "browser"}},
     {"env": {"PEEKABOO_DISABLE_TOOLS": "browser", "TOKEN": "secret"}},
     {"includeTools": []}, {"excludeTools": ["browser"]}, {"approveTools": []},
     {"requestTimeoutMs": 30000.0}, {"directTools": 0}, {"lifecycle": "eager"},
@@ -765,7 +763,7 @@ def test_missing_socket_can_be_planned_and_wired_but_not_checked(home, binary, p
     assert code == 0, report
     assert report["evidence"]["bridgeSocketState"] == "missing"
     assert report["evidence"]["permissionSource"] is None
-    assert any("Start the separately installed" in step for step in report["nextSteps"])
+    assert any("Open Peekaboo.app" in step for step in report["nextSteps"])
     assert not path.exists()
     before = list(probes)
     report, code = operate("check")
@@ -854,7 +852,7 @@ def test_socket_races_invalidate_approval(home, binary, probes, bridge_socket, m
                              racing_lock if timing == "lock" else lock)
     assert code and not (home / ".config/mcp/mcp.json").exists()
     assert report["evidence"]["bridgeSocketState"] == "missing"
-    assert any("Start the separately installed" in step for step in report["nextSteps"])
+    assert any("Open Peekaboo.app" in step for step in report["nextSteps"])
     if timing != "startup":
         assert not probes
 
@@ -937,7 +935,7 @@ def test_bridge_check_routes_exactly_without_readiness_claims(home, binary, prob
     assert evidence["mcp"] == evidence["desktop"] == "not-tested"
     assert probes[-1] == [str(binary), "permissions", "status", "--bridge-socket", str(bridge_socket), "--json"]
     assert all("mcp" not in call and "request" not in call for call in probes)
-    assert any("App availability is unverified" in warning for warning in report["warnings"])
+    assert any("Socket presence does not prove" in warning for warning in report["warnings"])
 
 
 @pytest.mark.parametrize("failure", ["local", "missing-source", "denied", "incomplete", "duplicate", "bad-boolean", "nonzero", "crash", "timeout", "cancel"])
@@ -945,10 +943,10 @@ def test_bridge_permission_failures_do_not_claim_ready(home, binary, probes, bri
     write_config(home, {"mcpServers": {"peekaboo": p.entry(binary, "bridge", bridge_socket)}})
     original = p.run_bounded
 
-    def run(command, timeout=15, *, native_only=False):
+    def run(command, timeout=15, label=None):
         if command[-1] != "--json":
             return original(command, timeout)
-        assert native_only is True
+        assert "--bridge-socket" in command
         if failure == "timeout":
             raise p.SetupError("Read-only probe timed out; no readiness is implied.")
         if failure == "cancel":
@@ -987,7 +985,7 @@ def test_bridge_install_retains_official_cli_pin(home, probes, monkeypatch):
     assert code == 0, report
     configured = json.loads((home / ".config/mcp/mcp.json").read_text())["mcpServers"]["peekaboo"]
     assert configured == p.entry(p.managed() / "peekaboo", "bridge", path)
-    assert p.VERSION == "4.5.0" and p.TEAM == "FWJYW4S8P8"
+    assert p.VERSION == "4.9.5" and p.TEAM == "FWJYW4S8P8"
     assert not list(p.managed().parent.glob(".peekaboo-*"))
     assert not (home / ".config/pi-shared/setup.json").exists()
 
@@ -1029,3 +1027,267 @@ sys.exit(p.main(['check','--json','--binary',{str(binary)!r}],nullcontext))
                 os.kill(int(pid_file.read_text()), signal.SIGKILL)
             except ProcessLookupError:
                 pass
+
+
+def write_app(path, version=None, identifier=None):
+    (path / "Contents").mkdir(parents=True)
+    (path / "Contents/Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleIdentifier": identifier or p.APP_IDENTIFIER, "CFBundleShortVersionString": version or p.VERSION}))
+
+
+@pytest.fixture
+def app(home, monkeypatch):
+    path = home / "Applications/Peekaboo.app"
+    path.parent.mkdir()
+    monkeypatch.setattr(p, "APP", path)
+    return path
+
+
+@pytest.fixture
+def app_socket():
+    with tempfile.TemporaryDirectory(prefix="pb-", dir=str(Path("/tmp").resolve())) as temp:
+        yield Path(temp) / "bridge.sock"  # Created only when the app "launches".
+
+
+@pytest.fixture
+def app_probes(probes, monkeypatch, app_socket):
+    fake = p.run_bounded
+
+    def run(command, timeout=15, label=None):
+        if command[0] == "/usr/bin/ditto":
+            probes.append([str(x) for x in command])
+            write_app(Path(command[-1]) / "Peekaboo.app")
+            return 0, b"", b""
+        if command[0] == "/usr/bin/open":
+            probes.append([str(x) for x in command])
+            with socket.socket(socket.AF_UNIX) as server:
+                server.bind(str(app_socket))
+                app_socket.chmod(0o600)
+            return 0, b"", b""
+        return fake(command, timeout, label)
+
+    def download(path, url=None, sha256=None):
+        downloads.append(url or p.URL)
+        path.write_bytes(archive_bytes() if url in {None, p.URL} else b"zip")
+
+    downloads = []
+    monkeypatch.setattr(p, "run_bounded", run)
+    monkeypatch.setattr(p, "download_bounded", download)
+    return SimpleNamespace(calls=probes, downloads=downloads)
+
+
+def bridge_install(app_socket, **extra):
+    return {"install": True, "install_app": True, "mode": "bridge", "bridge_socket": str(app_socket)} | extra
+
+
+def test_install_app_requires_bridge(home, binary, app):
+    report, code = operate(binary=str(binary), install_app=True)
+    assert code and any("--install-app requires Bridge" in error for error in report["errors"])
+
+
+@pytest.mark.parametrize("version,identifier,message", [("4.5.0", None, "older"), (None, "com.example.other", "not the official")])
+def test_install_app_refuses_older_or_foreign_app(home, app, app_socket, version, identifier, message):
+    write_app(app, version, identifier)
+    report, code = operate(**bridge_install(app_socket))
+    assert code and any(message in error for error in report["errors"])
+    assert not p.managed().exists()
+
+
+def test_install_app_installs_launches_and_wires(home, app, app_socket, app_probes):
+    plan, code = operate(**bridge_install(app_socket))
+    assert code == 0 and plan["evidence"]["bridgeSocketState"] == "missing"
+    assert not app.exists() and not app_probes.calls
+    report, code = operate("apply", yes=True, expected_plan=plan["planId"], **bridge_install(app_socket))
+    assert code == 0, report
+    assert app_version_of(app) == p.VERSION
+    assert app_probes.downloads == [p.URL, p.APP_URL]
+    assert ["/usr/bin/open", str(app)] in app_probes.calls
+    assert any(call[:3] == ["/usr/bin/codesign", "--verify", "--deep"] and call[-1].endswith("payload/Peekaboo.app")
+               for call in app_probes.calls)
+    assert report["evidence"]["bridgeSocketState"] == "present"
+    configured = json.loads((home / ".config/mcp/mcp.json").read_text())["mcpServers"]["peekaboo"]
+    assert configured == p.entry(p.managed() / "peekaboo", "bridge", app_socket)
+    assert any("Screen & System Audio Recording" in step for step in report["nextSteps"])
+    assert not list(p.managed().parent.glob(".peekaboo-*"))
+
+
+def app_version_of(app):
+    return plistlib.loads((app / "Contents/Info.plist").read_bytes())["CFBundleShortVersionString"]
+
+
+def test_existing_app_is_verified_not_replaced(home, app, app_socket, app_probes):
+    write_app(app, "4.10.0")
+    (app / "keep").write_text("user")
+    report, code = approve(**bridge_install(app_socket))
+    assert code == 0, report
+    assert app_probes.downloads == [p.URL] and (app / "keep").read_text() == "user"
+    assert any(call[:3] == ["/usr/bin/codesign", "--verify", "--deep"] and call[-1] == str(app)
+               for call in app_probes.calls)
+    assert not any(call[0] == "/usr/bin/ditto" for call in app_probes.calls)
+
+
+def test_app_appearing_during_install_is_not_replaced(home, app, app_socket, app_probes, monkeypatch):
+    fake = p.run_bounded
+
+    def run(command, timeout=15, label=None):
+        if command[0] == "/usr/bin/ditto":
+            write_app(app, "9.9.9")
+        return fake(command, timeout, label)
+
+    monkeypatch.setattr(p, "run_bounded", run)
+    report, code = approve(**bridge_install(app_socket))
+    assert code and any("appeared during installation" in error for error in report["errors"])
+    assert app_version_of(app) == "9.9.9"
+    assert not (home / ".config/mcp/mcp.json").exists()
+    assert not list(p.managed().parent.glob(".peekaboo-app-*"))
+
+
+def legacy_entry(home, mode, bridge_socket=None):
+    legacy = home / ".local/share/peekaboo/4.5.0/peekaboo"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_bytes(b"old")
+    legacy.chmod(0o755)
+    value = p.entry(legacy, mode, bridge_socket)
+    if mode == "bridge":
+        value["env"] = {"PEEKABOO_DISABLE_TOOLS": "browser"}  # Exactly what 0.1.23-0.1.37 wrote.
+    return legacy, value
+
+
+@pytest.mark.parametrize("mode", ["direct", "bridge"])
+def test_exact_legacy_entries_are_upgraded_only_with_install(home, app, app_socket, app_probes, mode):
+    legacy, value = legacy_entry(home, mode, app_socket)
+    other = {"url": "https://example.invalid"}
+    config = write_config(home, {"mcpServers": {"other": other, "peekaboo": value}})
+    before = config.read_bytes()
+    for action in ["plan", "check"]:
+        report, code = operate(action)
+        assert code and report["evidence"]["configuration"] == "conflict"
+        assert any("outdated" in error for error in report["errors"])
+    assert not app_probes.calls
+    report, code = approve(**bridge_install(app_socket))
+    assert code == 0, report
+    assert any("Replace the existing entry" in action for action in report["actions"])
+    assert json.loads(config.read_text())["mcpServers"] == {
+        "other": other, "peekaboo": p.entry(p.managed() / "peekaboo", "bridge", app_socket)}
+    assert config.read_bytes() != before and legacy.read_bytes() == b"old"
+
+
+def test_legacy_replacement_requires_explicit_mode(home, app_socket):
+    _, value = legacy_entry(home, "bridge", app_socket)
+    write_config(home, {"mcpServers": {"peekaboo": value}})
+    report, code = operate(install=True)
+    assert code and any("explicit --mode" in error for error in report["errors"])
+
+
+def test_newer_managed_version_is_never_replaced(home, app, app_socket, app_probes):
+    newer = home / ".local/share/peekaboo/9.0.0/peekaboo"
+    config = write_config(home, {"mcpServers": {"peekaboo": p.entry(newer)}})
+    before = config.read_bytes()
+    assert not p.managed_legacy(newer) and p.managed_legacy(newer.parent.parent / "4.5.0/peekaboo")
+    report, code = operate(**bridge_install(app_socket))
+    assert code and not any("Replace" in action for action in report["actions"])
+    assert config.read_bytes() == before and not app_probes.downloads
+
+
+def test_retry_after_partial_upgrade_reuses_installed_cli(home, app, app_socket, app_probes, monkeypatch):
+    _, value = legacy_entry(home, "direct")
+    config = write_config(home, {"mcpServers": {"peekaboo": value}})
+    original = p.install_app
+
+    def failing(report):
+        raise p.SetupError("synthetic app failure")
+
+    monkeypatch.setattr(p, "install_app", failing)
+    report, code = approve(**bridge_install(app_socket))
+    assert code and (p.managed() / "peekaboo").exists()
+    assert json.loads(config.read_text())["mcpServers"]["peekaboo"] == value
+    monkeypatch.setattr(p, "install_app", original)
+    monkeypatch.setattr(p, "discover", lambda: p.managed() / "peekaboo")  # What real discovery now finds.
+    app_probes.downloads.clear()
+    report, code = approve(**bridge_install(app_socket))
+    assert code == 0, report
+    assert any("Reuse the already installed" in action for action in report["actions"])
+    assert app_probes.downloads == [p.APP_URL]
+    assert json.loads(config.read_text())["mcpServers"]["peekaboo"] == p.entry(p.managed() / "peekaboo", "bridge", app_socket)
+
+
+def test_config_change_is_detected_before_installing_the_app(home, app, app_socket, app_probes, monkeypatch):
+    config = write_config(home, {"setting": True})
+    original = p.startup
+
+    def startup(binary, report):
+        verified = original(binary, report)
+        config.write_text('{"concurrent": true}')
+        return verified
+
+    monkeypatch.setattr(p, "startup", startup)
+    report, code = approve(**bridge_install(app_socket))
+    assert code and not app.exists() and app_probes.downloads == [p.URL]
+    assert not any(call[0] == "/usr/bin/open" for call in app_probes.calls)
+
+
+def test_empty_directory_appearing_at_app_path_is_not_replaced(home, app, app_socket, app_probes, monkeypatch):
+    fake = p.run_bounded
+
+    def run(command, timeout=15, label=None):
+        if command[0] == "/usr/bin/ditto":
+            app.mkdir()  # rename(2) would silently replace this; RENAME_EXCL must not.
+        return fake(command, timeout, label)
+
+    monkeypatch.setattr(p, "run_bounded", run)
+    report, code = approve(**bridge_install(app_socket))
+    assert code and any("appeared during installation" in error for error in report["errors"])
+    assert app.is_dir() and not list(app.iterdir())
+
+
+def test_unwritable_applications_gives_manual_guidance(home, app, app_socket, app_probes, monkeypatch):
+    def denied(source, target):
+        raise PermissionError(13, "Permission denied")
+
+    monkeypatch.setattr(p, "rename_exclusive", denied)
+    report, code = approve(**bridge_install(app_socket))
+    assert code and any("install Peekaboo.app" in error for error in report["errors"])
+    assert not (home / ".config/mcp/mcp.json").exists()
+
+
+def test_missing_socket_after_launch_still_configures(home, app, app_socket, app_probes, monkeypatch):
+    fake = p.run_bounded
+    monkeypatch.setattr(p, "LAUNCH_WAIT", 0.05)
+    monkeypatch.setattr(p, "run_bounded", lambda command, timeout=15, label=None:
+                        (0, b"", b"") if command[0] == "/usr/bin/open" else fake(command, timeout, label))
+    report, code = approve(**bridge_install(app_socket))
+    assert code == 0, report
+    assert report["evidence"]["bridgeSocketState"] == "missing"
+    assert any("did not appear" in step for step in report["nextSteps"])
+    assert not any("Open Peekaboo.app" in step for step in report["nextSteps"])
+    assert (home / ".config/mcp/mcp.json").exists()
+
+
+@pytest.mark.parametrize("content", [b"<plist><dict><key>broken", b"\x00binary", b"", plistlib.dumps(["array"])])
+def test_malformed_app_plist_is_a_structured_error(home, app, app_socket, content):
+    (app / "Contents").mkdir(parents=True)
+    (app / "Contents/Info.plist").write_bytes(content)
+    report, code = operate(**bridge_install(app_socket))
+    assert code and any("not the official Peekaboo app" in error for error in report["errors"])
+
+
+def test_custom_entry_is_never_upgraded(home, app, app_socket, app_probes):
+    custom = home / "custom/peekaboo"
+    config = write_config(home, {"mcpServers": {"peekaboo": {"command": str(custom), "args": ["mcp"]}}})
+    before = config.read_bytes()
+    report, code = operate(**bridge_install(app_socket))
+    assert code and report["evidence"]["configuration"] == "conflict"
+    assert config.read_bytes() == before and not app_probes.downloads
+
+
+def test_legacy_upgrade_targets_the_managed_pin_not_homebrew(home, app, app_socket, app_probes, monkeypatch):
+    _, value = legacy_entry(home, "direct")
+    config = write_config(home, {"mcpServers": {"peekaboo": value}})
+    homebrew = home / "Cellar/peekaboo/1.0/bin/peekaboo"
+    homebrew.parent.mkdir(parents=True)
+    homebrew.write_bytes(b"brew")
+    homebrew.chmod(0o755)
+    monkeypatch.setattr(p, "discover", lambda: homebrew)
+    report, code = approve(**bridge_install(app_socket))
+    assert code == 0, report
+    assert json.loads(config.read_text())["mcpServers"]["peekaboo"]["command"] == str(p.managed() / "peekaboo")

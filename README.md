@@ -76,17 +76,18 @@ module installers used below. The new CLI defaults writable module checkouts to
 ## Optional native macOS control (0.1.23+ routes)
 
 `pi-shared peekaboo {plan,status,apply,check}` separately configures an opt-in
-Peekaboo MCP server: full-catalog `--mode direct`, or desktop-app permission owner
-`--mode bridge --bridge-socket /absolute/path` with only browser tools temporarily
-disabled. Omitted mode preserves an exact existing route, otherwise defaults to
+Peekaboo MCP server: full-catalog `--mode direct`, or full-catalog desktop-app
+permission owner `--mode bridge --bridge-socket /absolute/path`. Omitted mode preserves an exact existing route, otherwise defaults to
 direct; conflicting entries are never migrated. New profiles target official
 Pi 1.0.3 native `<agent-dir>/mcp.json`; detected legacy adapter installs remain on
 the adapter with a warning until [explicit MCP migration](docs/mcp.md). Start with
 `pi-shared peekaboo plan --json`; applying requires explicit approval and that
 plan's ID. JSON schema 2 includes route, socket and permission-source evidence.
-This is not a setup module or service, does not install/launch the app or grant
-OS permissions, and never equates socket presence with app/desktop readiness. Read [Peekaboo setup and compatibility warnings](docs/peekaboo.md)
-before selecting a binary or explicitly installing the older 4.5.0 CLI pin.
+This is not a setup module or service and never grants OS permissions or equates
+socket presence with app/desktop readiness. Explicit `--install` downloads the pinned
+4.9.5 CLI; Bridge-only `--install-app` installs the signed Peekaboo.app 4.9.5 into
+`/Applications` when missing and launches it (0.1.38+). Read [Peekaboo setup](docs/peekaboo.md)
+before selecting a binary or installing.
 
 ## In-Pi capability setup
 
