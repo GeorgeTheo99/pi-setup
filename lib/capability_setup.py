@@ -216,8 +216,9 @@ def dependency_update_handoff(report):
 def homebrew_node_ancestor(node, ancestor, info):
     match = re.fullmatch(r"(/opt/homebrew|/usr/local)/Cellar/node(?:@\d+)?/[^/]+/bin/node", str(node))
     allowed = {Path(match[1]), Path(match[1]) / "Cellar"} if match else set()
-    return (platform.system() == "Darwin" and ancestor in allowed and info.st_gid == 80 and
-            80 in os.getgroups() and not info.st_mode & 0o002)
+    # Homebrew prefixes are group admin (80) by default, staff (20) when user-owned.
+    return (platform.system() == "Darwin" and ancestor in allowed and info.st_gid in {80, 20} and
+            info.st_gid in os.getgroups() and not info.st_mode & 0o002)
 
 
 def node_identity(node):

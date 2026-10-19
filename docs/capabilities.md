@@ -32,9 +32,10 @@ this backend. No discovery of an ancestor project or implicit active profile.
 
 The Pi frontend canonicalizes its active context paths before invoking this backend.
 Code-intel accepts standard Homebrew Node Cellar executables when only the prefix
-or `Cellar` ancestor is admin-group-writable and the current user belongs to that
-group. World-writable ancestors, other group-writable locations and executable
-symlinks remain refused. This follows Homebrew's trust in other local admins.
+or `Cellar` ancestor is `admin`- or `staff`-group-writable and the current user
+belongs to that group. World-writable ancestors, other group-writable locations and
+executable symlinks remain refused. This follows Homebrew's trust in other local
+members of that group.
 
 ## Options and ownership
 
