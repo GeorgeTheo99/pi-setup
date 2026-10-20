@@ -306,7 +306,7 @@ def test_peekaboo_new_profile_defaults_native(fixture, monkeypatch):
     binary.chmod(0o700)
     report, code = p.operate(pb_args(f, binary=str(binary)), lock)
     assert code == 0, report
-    assert "Official Pi 1.0.3" in " ".join(report["warnings"])
+    assert "backend: native" in " ".join(report["actions"])
     monkeypatch.setattr(p, "startup", lambda *a: p.read_file(binary, p.MAX_EXPANDED, executable=True)[1])
     applied, code = p.operate(pb_args(f, "apply", binary=str(binary), yes=True, expected_plan=report["planId"]), lock)
     assert code == 0, applied
@@ -320,7 +320,7 @@ def test_peekaboo_after_migration_uses_native_even_legacy_source_retained(fixtur
     report, code = p.operate(pb_args(fixture), lock)
     assert code == 0, report
     assert report["evidence"]["configuration"] == "matching"
-    assert "Official Pi 1.0.3" in " ".join(report["warnings"])
+    assert "backend: native" in " ".join(report["actions"])
 
 
 def test_peekaboo_legacy_not_silently_switched(fixture):

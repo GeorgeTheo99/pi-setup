@@ -217,8 +217,10 @@ def homebrew_node_ancestor(node, ancestor, info):
     match = re.fullmatch(r"(/opt/homebrew|/usr/local)/Cellar/node(?:@\d+)?/[^/]+/bin/node", str(node))
     allowed = {Path(match[1]), Path(match[1]) / "Cellar"} if match else set()
     # Homebrew prefixes are group admin (80) by default, staff (20) when user-owned.
-    return (platform.system() == "Darwin" and ancestor in allowed and info.st_gid in {80, 20} and
-            info.st_gid in os.getgroups() and not info.st_mode & 0o002)
+    # Every local user is in staff, so a staff ancestor must also be the caller's own.
+    return (platform.system() == "Darwin" and ancestor in allowed and info.st_gid in os.getgroups() and
+            (info.st_gid == 80 or info.st_gid == 20 and info.st_uid == os.getuid()) and
+            not info.st_mode & 0o002)
 
 
 def node_identity(node):

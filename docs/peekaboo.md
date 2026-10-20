@@ -84,7 +84,10 @@ permission instructions from child output, or raw UI content.
 Discovery uses only an explicit `--binary`, the existing correctly shaped
 `mcpServers.peekaboo.command`, the managed 4.9.5 path, or known Homebrew
 `/opt/homebrew/bin/peekaboo` / `/usr/local/bin/peekaboo` links into their respective
-`Cellar/peekaboo` directories. It never searches PATH or the working directory.
+`Cellar/peekaboo` directories. A Homebrew link is adopted only when it targets the
+pinned 4.9.5 release; other Homebrew versions cannot pass the exact-version check, so
+they are ignored and `--install` provisions the managed pin. It never searches PATH
+or the working directory.
 Explicit and configured binary paths must be normalized absolute regular
 executables without symlinks, hardlinks, setuid/setgid bits, or shared-write access.
 For a Homebrew symlink supplied explicitly, select its actual Cellar executable.

@@ -24,7 +24,13 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.38** keeps stock Pi 1.0.3. `pi-shared peekaboo` pins official
+Package **0.1.39** keeps stock Pi 1.0.3. `/setup` and code-intel now accept
+Homebrew prefix/`Cellar` ancestors writable by group `staff` as well as `admin`
+(user-owned prefixes), and unsafe-ancestor errors name the directory to fix.
+`pi-shared peekaboo` no longer adopts a non-pinned Homebrew Peekaboo (e.g. 4.5.0),
+so recommended setup installs the pinned 4.9.5 CLI instead of failing signature
+checks, and plan/apply reports drop repeated boilerplate warnings.
+Package 0.1.38 keeps stock Pi 1.0.3. `pi-shared peekaboo` pins official
 Peekaboo **4.9.5**: new `--install-app` installs/launches the signed Peekaboo.app
 in `/Applications`, Bridge entries keep the full catalog (no browser exclusion),
 and `--install` upgrades a setup-managed 4.5.0 entry. See [Peekaboo](peekaboo.md).

@@ -23,6 +23,7 @@ sys.path.insert(0, str(ROOT / "lib"))
 spec = importlib.util.spec_from_file_location("peekaboo_setup", ROOT / "lib/peekaboo_setup.py")
 p = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(p)
+ORIGINAL_DISCOVER = p.discover
 
 
 @pytest.fixture
@@ -32,7 +33,7 @@ def home(tmp_path, monkeypatch):
     monkeypatch.delenv("PI_CODING_AGENT_DIR", raising=False)
     monkeypatch.setattr(p.platform, "system", lambda: "Darwin")
     monkeypatch.setattr(p.platform, "machine", lambda: "arm64")
-    monkeypatch.setattr(p, "discover", lambda: None)
+    monkeypatch.setattr(p, "discover", lambda report=None: None)
     return tmp_path
 
 
@@ -1202,7 +1203,7 @@ def test_retry_after_partial_upgrade_reuses_installed_cli(home, app, app_socket,
     assert code and (p.managed() / "peekaboo").exists()
     assert json.loads(config.read_text())["mcpServers"]["peekaboo"] == value
     monkeypatch.setattr(p, "install_app", original)
-    monkeypatch.setattr(p, "discover", lambda: p.managed() / "peekaboo")  # What real discovery now finds.
+    monkeypatch.setattr(p, "discover", lambda report=None: p.managed() / "peekaboo")  # What real discovery now finds.
     app_probes.downloads.clear()
     report, code = approve(**bridge_install(app_socket))
     assert code == 0, report
@@ -1287,7 +1288,75 @@ def test_legacy_upgrade_targets_the_managed_pin_not_homebrew(home, app, app_sock
     homebrew.parent.mkdir(parents=True)
     homebrew.write_bytes(b"brew")
     homebrew.chmod(0o755)
-    monkeypatch.setattr(p, "discover", lambda: homebrew)
+    monkeypatch.setattr(p, "discover", lambda report=None: homebrew)
     report, code = approve(**bridge_install(app_socket))
     assert code == 0, report
     assert json.loads(config.read_text())["mcpServers"]["peekaboo"]["command"] == str(p.managed() / "peekaboo")
+
+
+
+
+def _brew(prefix, version):
+    target = prefix / "Cellar/peekaboo" / version / "libexec/peekaboo"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(b"brew")
+    target.chmod(0o755)
+    link = prefix / "bin/peekaboo"
+    link.parent.mkdir(parents=True, exist_ok=True)
+    if link.is_symlink():
+        link.unlink()
+    link.symlink_to(target)
+    return target.resolve()
+
+
+def test_only_the_pinned_homebrew_cli_is_adopted(home, monkeypatch):
+    # Another Homebrew release can never pass the exact-pin check, so it is not
+    # selected; the recommended route then installs the managed pin instead.
+    monkeypatch.setattr(p, "discover", ORIGINAL_DISCOVER)
+    first, second = home / "brew", home / "usr-local"
+    monkeypatch.setattr(p, "HOMEBREW_PREFIXES", (first, second))
+    _brew(first, "4.5.0")
+    report = p.result("plan")
+    assert p.discover(report) is None
+    assert any("Ignored Homebrew Peekaboo 4.5.0" in a for a in report["warnings"])
+    pinned = _brew(second, p.VERSION + "_1")  # Later prefix and bottle revision still count.
+    assert p.discover() == pinned
+    assert p.discover() == pinned
+    assert _brew(first, p.VERSION) == p.discover()
+
+
+def test_configured_non_pinned_homebrew_cli_gets_an_actionable_error(home, monkeypatch):
+    prefix = home / "brew"
+    monkeypatch.setattr(p, "HOMEBREW_PREFIXES", (prefix,))
+    old = _brew(prefix, "4.5.0")
+    write_config(home, {"mcpServers": {"peekaboo": p.entry(old)}})
+    for action in ("plan", "check"):
+        report, code = operate(action)
+        assert code == 1
+        assert "Configured Homebrew Peekaboo 4.5.0 is not the supported" in report["errors"][0]
+        assert "Remove mcpServers.peekaboo" in report["errors"][0]
+        assert report["evidence"]["binaryPath"] == str(old)
+    write_config(home, {"mcpServers": {}})
+    report, code = operate("plan", binary=str(old))
+    assert code == 1 and "Selected Homebrew Peekaboo 4.5.0" in report["errors"][0]
+    assert "brew upgrade peekaboo" in report["errors"][0]
+
+
+def test_host_warning_only_accompanies_permission_probes(home, binary, probes):
+    write_config(home, {"mcpServers": {"peekaboo": p.entry(binary)}})
+    plan, _ = operate("plan")
+    assert p.HOST_WARNING not in plan["warnings"]
+    checked, code = operate("check")
+    assert code == 0 and p.HOST_WARNING in checked["warnings"]
+
+
+def test_stale_homebrew_cli_is_ignored_and_recommended_install_succeeds(home, monkeypatch, app, app_socket, app_probes):
+    monkeypatch.setattr(p, "discover", ORIGINAL_DISCOVER)
+    prefix = home / "brew"
+    monkeypatch.setattr(p, "HOMEBREW_PREFIXES", (prefix,))
+    _brew(prefix, "4.5.0")
+    config = write_config(home, {"mcpServers": {}})
+    report, code = approve(**bridge_install(app_socket))
+    assert code == 0, report
+    command = json.loads(config.read_text())["mcpServers"]["peekaboo"]["command"]
+    assert command == str(p.managed() / "peekaboo")

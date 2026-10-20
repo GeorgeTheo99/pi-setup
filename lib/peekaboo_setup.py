@@ -37,6 +37,7 @@ TEAM = "FWJYW4S8P8"
 IDENTIFIER = "boo.peekaboo.peekaboo"
 APP_IDENTIFIER = "boo.peekaboo.mac"
 APP = Path("/Applications/Peekaboo.app")
+HOMEBREW_PREFIXES = (Path("/opt/homebrew"), Path("/usr/local"))
 MAX_CONFIG = 1024 * 1024
 MAX_ARCHIVE = 150 * 1024 * 1024
 MAX_EXPANDED = 300 * 1024 * 1024
@@ -53,7 +54,7 @@ class SetupError(RuntimeError):
 
 def result(action):
     return {"schemaVersion": 2, "component": "peekaboo", "action": action, "ok": False,
-            "summary": "Peekaboo operation not completed.", "actions": [], "warnings": [HOST_WARNING],
+            "summary": "Peekaboo operation not completed.", "actions": [], "warnings": [],
             "errors": [], "nextSteps": [], "evidence": {
                 "mode": "direct", "bridgeSocketPath": None,
                 "bridgeSocketState": "not-applicable", "permissionSource": None,
@@ -280,18 +281,34 @@ def app_version(app=None):
     return version
 
 
-def discover():
+def homebrew_version(path):
+    """Cellar version (bottle revision stripped) for a Homebrew Peekaboo path, else None."""
+    for prefix in HOMEBREW_PREFIXES:
+        cellar = prefix / "Cellar/peekaboo"
+        if path is not None and path.is_relative_to(cellar) and path != cellar:
+            return re.sub(r"_\d+\Z", "", path.relative_to(cellar).parts[0])
+    return None
+
+
+def discover(report=None):
     local = managed() / "peekaboo"
     if local.exists() or local.is_symlink():
         return local
     # Only these Homebrew links are resolved. Explicit/configured symlinks are
     # rejected; never search PATH or the working directory.
-    for prefix in (Path("/opt/homebrew"), Path("/usr/local")):
+    for prefix in HOMEBREW_PREFIXES:
         candidate = prefix / "bin/peekaboo"
         if candidate.exists() or candidate.is_symlink():
             target = candidate.resolve(strict=True)
             if not target.is_relative_to(prefix / "Cellar/peekaboo"):
                 raise SetupError("Homebrew Peekaboo link does not target its expected Cellar.")
+            # Another release cannot pass the exact-pin startup check, so it is not
+            # adopted; the recommended route then installs the managed pin.
+            version = homebrew_version(target)
+            if version != VERSION:
+                if report is not None:
+                    report["warnings"].append(f"Ignored Homebrew Peekaboo {version} (not the {VERSION} pin).")
+                continue
             return target
     return None
 
@@ -319,7 +336,6 @@ def mcp_target(args, report):
     if backend == "native":
         if adapters or "-builtin:mcp" in settings.get("extensions", []):
             raise SetupError("Selected profile still loads the adapter or disables native MCP. Run capability mcp migration (or review profile settings) first; Peekaboo never silently switches backends.")
-        report["warnings"].append("Official Pi 1.0.3 MCP: codemode tool discovery, but the server connects at session startup (not adapter lazy lifecycle). Project/CLI/custom extension overrides remain unverified.")
     else:
         report["warnings"].append("Legacy adapter MCP configuration preserved explicitly; this is not native Pi MCP readiness. Use capability mcp mode migrate to review profile migration before switching. No adapter is installed or uninstalled here.")
     report["actions"].append("MCP backend: " + backend + "; configuration: " + str(config))
@@ -363,11 +379,20 @@ def inspect(args, report):
     mode, socket, socket_stamp = select_route(args, existing, report, backend)
     configured = path_value(existing["command"]) if existing is not None else None
     # An upgrade targets the managed pin, never another discovered (e.g. Homebrew) CLI.
-    binary = path_value(args.binary) if args.binary else configured or (managed() / "peekaboo" if replacing else discover())
+    binary = path_value(args.binary) if args.binary else configured or (managed() / "peekaboo" if replacing else discover(report))
     if existing is not None and binary != configured:
         raise SetupError("Selected binary conflicts with the existing Peekaboo entry.")
     if existing is not None:
         report["evidence"]["configuration"] = "matching"
+    stale = homebrew_version(binary)
+    if stale is not None and stale != VERSION:
+        report["evidence"]["binaryPath"] = str(binary)
+        # A configured entry pins the versioned Cellar path, so brew upgrade alone cannot fix it.
+        raise SetupError(f"Configured Homebrew Peekaboo {stale} is not the supported {VERSION} pin. Remove "
+                         "mcpServers.peekaboo from the MCP configuration, then rerun /setup peekaboo to install the pin."
+                         if existing is not None else
+                         f"Selected Homebrew Peekaboo {stale} is not the supported {VERSION} pin. Run `brew upgrade "
+                         "peekaboo` and select the new Cellar executable, or omit --binary to install the pin.")
     binary_stamp = None
     runtime_stamp = None
     if binary:
@@ -813,6 +838,7 @@ def operate(args, lock):
             if selection["mode"] == "bridge" and socket_snapshot(Path(selection["bridgeSocketPath"]), report) != selection["bridgeSocketStamp"]:
                 raise SetupError("Bridge socket changed during validation; recheck before probing permissions.")
             permissions(Path(selection["binary"]), report)
+            report["warnings"].append(HOST_WARNING)  # Probe evidence is only meaningful with its caveat.
             if report["evidence"]["configuration"] != "matching":
                 raise SetupError("CLI probes passed but Peekaboo configuration is missing.")
             report["summary"] = "CLI and selected-host permissions checked; MCP and desktop remain not tested."
