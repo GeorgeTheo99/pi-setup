@@ -1,4 +1,4 @@
-"""Offline, profile-scoped migration from pi-mcp-adapter to Pi 1.0.3 MCP.
+"""Offline, profile-scoped migration from pi-mcp-adapter to Pi 1.3.0 MCP.
 
 Never execute servers/credential commands, uninstall packages, or edit the source.
 Ambiguous adapter policy fails closed rather than becoming an ignored native key.
@@ -581,13 +581,13 @@ def inspect(paths, opts, report, selection):
     handoff(report, "Explicit native connection check (starts every enabled server)", ["env", "PI_CODING_AGENT_DIR=" + str(agent), "pi", "mcp", "list"])
     handoff(report, "Native server manager after restarting the selected profile", "/mcp", "pi")
     if opts["mode"] != "migrate":
-        report["nextSteps"].append("Use mode migrate to preview adapter conversion, or add new servers with pi mcp add in this profile. No adapter installation is needed on Pi 1.0.3.")
+        report["nextSteps"].append("Use mode migrate to preview adapter conversion, or add new servers with pi mcp add in this profile. No adapter installation is needed on Pi 1.3.0.")
         return
     source = path_value(opts.get("sourceConfig", str(Path.home() / ".config/mcp/mcp.json")))
     if "sourceConfig" in opts and object_file(source)[1] is None:
         raise SetupError("Adapter source configuration is missing.")
     plan_migration(agent, source, paths["project"], selection, report)
-    report["nextSteps"].append("Stop affected Pi sessions before apply. After apply restart Pi 1.0.3, use /mcp, then separately approve pi mcp list and any OAuth login. Rollback instructions and hashes are in the private backup manifest.")
+    report["nextSteps"].append("Stop affected Pi sessions before apply. After apply restart Pi 1.3.0, use /mcp, then separately approve pi mcp list and any OAuth login. Rollback instructions and hashes are in the private backup manifest.")
 
 
 def plan_migration(agent, source, project, selection, report):

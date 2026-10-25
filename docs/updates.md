@@ -24,7 +24,16 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.39** keeps stock Pi 1.0.3. `/setup` and code-intel now accept
+Package **0.1.40** moves to stock Pi **1.3.0**, the newest release available
+through the Databricks npm proxy, after its complete lockset passed a fresh-cache
+installation. Breaking changes since 1.0.3: `before_agent_start` also fires for
+custom-message runs (`event.messageType` is `"user"` or `"custom"`; only user
+events carry `prompt`/`images`), a session counts as busy while a run starts,
+theme schemas moved to `https://pi.dev/schemas/theme.schema.json`, `pi mcp list
+--json` reports `resources: true` instead of counts, and `--tools` keeps MCP
+tools unless an entry starts with `mcp__` (use `--no-mcp` or `--exclude-tools
+'mcp__*'` to drop them). `@earendil-works/chord` and `esbuild` leave the runtime.
+Package 0.1.39 keeps stock Pi 1.0.3. `/setup` and code-intel now accept
 Homebrew prefix/`Cellar` ancestors writable by group `staff` as well as `admin`
 (user-owned prefixes), and unsafe-ancestor errors name the directory to fix.
 `pi-shared peekaboo` no longer adopts a non-pinned Homebrew Peekaboo (e.g. 4.5.0),
