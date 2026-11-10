@@ -24,6 +24,10 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.42** adds optional pi-jobs setup (`--pi-jobs local` or a server
+URL) and keeps the 1.5.0 runtime. Updates reinstall a selected local pi-jobs
+module from its pinned release, keep its proxy host names and state directory,
+and recheck that Pi's client config still points at the selected server.
 Package **0.1.41** moves to stock Pi **1.5.0**. Its lockset was resolved with
 every package at least seven days old and passed a fresh-cache installation from
 registry.npmjs.org. Breaking changes since 1.3.0: tool arguments are validated as

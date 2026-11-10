@@ -97,7 +97,8 @@ def service_snapshot(modules, settings, omlx=None):
         raise RuntimeError("Invalid gateway service label")
     paths = {"model-gateway": gateway_dir / (label + ".plist"),
              "browser-worker": agents / "com.local.mcp-browser-worker.plist",
-             "local_web_search": agents / "com.local.mcp-websearch.plist"}
+             "local_web_search": agents / "com.local.mcp-websearch.plist",
+             "pi-jobs": agents / "com.local.pi-jobs.plist"}
     selected = list(modules)
     if omlx == "install":
         paths["omlx"] = agents / "homebrew.mxcl.omlx.plist"

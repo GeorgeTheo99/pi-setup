@@ -106,7 +106,7 @@ def test_setup_help_groups_all_options_and_explains_safety(tmp_path):
         assert text in result.stdout
 
 
-@pytest.mark.parametrize("example", range(12))
+@pytest.mark.parametrize("example", range(14))
 def test_every_setup_recipe_plans_from_an_empty_home(tmp_path, example):
     help_result = run_cli(tmp_path, "setup", "-h")
     assert help_result.returncode == 0
@@ -114,7 +114,7 @@ def test_every_setup_recipe_plans_from_an_empty_home(tmp_path, example):
     # Follow shell line continuations and expand only the documented HOME variable.
     recipes = [line.strip() for line in examples.replace("\\\n", "").splitlines()
                if line.strip().startswith("pi-shared setup ")]
-    assert len(recipes) == 12
+    assert len(recipes) == 14
     argv = shlex.split(recipes[example].replace("$HOME", str(tmp_path)))
     assert argv[0] == "pi-shared" and "--plan" in argv
     result = run_cli(tmp_path, *argv[1:])

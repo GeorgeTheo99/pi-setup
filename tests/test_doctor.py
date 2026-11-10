@@ -434,3 +434,17 @@ def test_invalid_browser_config_is_not_reported_as_explicitly_disabled(tmp_path)
     assert result.returncode == 1
     assert "Invalid browser selection configuration" in result.stdout
     assert "DISABLED" not in result.stdout
+
+
+@pytest.mark.parametrize("rc", [0, 7])
+def test_pi_jobs_uses_its_read_only_verifier(tmp_path, rc):
+    env, _ = fixture(tmp_path)
+    gateway_fixture(env)
+    executable(Path(env["PI_SETUP_CODE_ROOT"]) / "pi-jobs/bin/pi-jobs", f'echo "PI_JOBS $*"; exit {rc}')
+    result = run(env, "--module", "pi-shared", "--module", "pi-jobs")
+    if rc == 0:
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "has no built-in readiness check" not in result.stdout
+    else:
+        assert result.returncode == 1
+        assert "pi-jobs verification failed" in result.stdout

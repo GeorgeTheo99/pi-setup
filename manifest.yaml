@@ -64,3 +64,18 @@ modules:
       starting this installer. For direct install.sh
       use, pre-provision data/brave_key (0600, parent 0700), or use the documented
       custom data directory. The installer fails if the key is absent or unsafe.
+
+  pi-jobs:
+    repo: https://github.com/GeorgeTheo99/pi-jobs.git
+    ref: v0.2.1
+    tier: optional
+    description: >-
+      Scheduled, webhook-triggered and on-demand coding-agent jobs (Pi, Claude
+      Code, Codex) with a web UI, as a LaunchAgent on 127.0.0.1:8790. Each run
+      works in a fresh git worktree and leaves changes on a branch. Its
+      installer also points pi-shared's jobs_* tools at this server.
+    post_install_note: >-
+      Sign in to http://127.0.0.1:8790 with a token from
+      `pi-jobs token create <name>`. Other machines connect with
+      pi-shared setup --pi-jobs <URL>; reaching the server from them needs a
+      private reverse proxy such as Tailscale Serve (see the pi-jobs README).

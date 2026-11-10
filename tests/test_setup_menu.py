@@ -188,7 +188,7 @@ def test_confirmation_plan_scroll_keeps_cancel_selected():
 
 def test_guided_approval_includes_full_plan_and_warnings(isolated, monkeypatch):
     from test_questionnaire import answers
-    answers(monkeypatch, ["none"])
+    answers(monkeypatch, ["none", "skip"])
     monkeypatch.setenv("SEARCH_MCP_URL", "https://override.example/mcp")
     plans = []
     monkeypatch.setattr(cli.setup_menu, "confirm", lambda plan: plans.append(plan) or False)
@@ -281,6 +281,7 @@ def test_real_guided_flow_and_decline_restore_terminal(tmp_path):
         ("Optional Omnigent", b"\r"),
         ("Optional independent recovery", b"\r"),
         ("Web search and page retrieval", down * 2 + b"\r"),
+        ("Scheduled agent jobs (pi-jobs)", down * 2 + b"\r"),
         ("Cancel without changes", b"\x1b[6~\x1bOH\r"),
     ])
     assert code == 0 and "Cancelled; no installation changes made." in output, output
@@ -295,7 +296,8 @@ def test_real_guided_cancel_restores_terminal(tmp_path, key):
 
 def test_real_unicode_plan_uses_escaped_cells_without_overwrite(tmp_path):
     code, output = run_pty(tmp_path, ["--guided", "--mode", "later", "--without-browser",
-                                   "--without-omnigent", "--recovery", "skip", "--search", "skip"],
+                                   "--without-omnigent", "--recovery", "skip", "--search", "skip",
+                                   "--pi-jobs", "skip"],
                            [("Cancel without changes", b"\r")], home_name="界" * 60)
     assert code == 0, output
     # Inspect the actual curses output, not the plain plan printed before it.

@@ -233,6 +233,8 @@ def main():
                                "service identity/liveness verified", "provider credentials and inference")
     service("local_web_search", root / "local_web_search/scripts/local-search",
             "local readiness and MCP tool inventory verified", "Brave provider request")
+    service("pi-jobs", root / "pi-jobs/bin/pi-jobs",
+            "LaunchAgent loaded and /api/health verified", "Agent sign-ins, schedules and runs")
 
     cli_config = Path(os.environ.get("PI_LAUNCHER_CONFIG") or os.environ.get("PI_SHARED_CLI_OUT")
                       or home / ".pi/launcher.json").expanduser()
@@ -333,7 +335,7 @@ def main():
             doctor.warn("Browser readiness helper missing; public browser capability has not been verified")
 
     for name in args.module:
-        if name not in {"pi-shared", "model-gateway", "local_web_search", "browser-worker"}:
+        if name not in {"pi-shared", "model-gateway", "local_web_search", "browser-worker", "pi-jobs"}:
             doctor.warn(f"{name} has no built-in readiness check; use an explicitly selected overlay doctor")
     for overlay in args.overlay:
         overlay = overlay.expanduser().resolve()

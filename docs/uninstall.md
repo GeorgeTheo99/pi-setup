@@ -47,6 +47,7 @@ intact. The option never follows a link to delete its target or resets credentia
 | Standard/configured Pi profiles | Sessions, auth, custom settings; models unless explicitly archived |
 | Gateway source paths reported in the plan | Provider/workspace pools, configuration, model-info, credentials, ledger and backups |
 | Research settings and browser-worker data | Client configuration, token files and browser data |
+| pi-jobs state and client config | Jobs, run logs, kept worktrees and API tokens (`~/.local/state/pi-jobs`); Pi's client token (`~/.config/pi-jobs`) |
 | Other harnesses and shared alias catalog | All state; other clients may depend on it |
 | Logs, downloads, package caches | Diagnostic/history data and reusable downloads |
 | Setup directory | Inert `update.lock`; receipt is archived |

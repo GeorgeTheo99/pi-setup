@@ -471,7 +471,7 @@ class DoctorTests(Fixture):
         self.assertNotIn("VERIFY_DETAIL", output)
         self.assertIn("! VERIFY_WARNING", output)
         self.assertNotIn("source present", output)
-        self.assertRegex(output, r"\d+ checks passed; not selected: model-gateway, browser-worker")
+        self.assertRegex(output, r"\d+ checks passed; not selected: model-gateway, pi-jobs, browser-worker")
         self.assertNotIn("Not verified", output)
         self.assertIn("local_web_search: Brave provider request NOT tested", notes.read_text())
         self.assertIn("successful checks are not full runtime readiness", notes.read_text())

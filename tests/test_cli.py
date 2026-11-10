@@ -354,3 +354,63 @@ def test_invalid_receipt_never_runs_doctor(isolated):
     with pytest.raises(RuntimeError, match="Invalid"):
         cli.status()
     assert not isolated[1]
+
+
+def test_local_pi_jobs_adds_the_module_and_is_remembered(isolated, monkeypatch, capsys):
+    home, calls = isolated
+    import plistlib
+
+    def install(args, **kw):
+        # Stand in for the pi-jobs installer: an owner-only LaunchAgent.
+        calls.append((list(map(str, args)), kw))
+        plist = home / "Library/LaunchAgents/com.local.pi-jobs.plist"
+        plist.parent.mkdir(parents=True, exist_ok=True)
+        plist.write_bytes(plistlib.dumps({"Label": "com.local.pi-jobs", "WorkingDirectory": "/x",
+                                          "ProgramArguments": ["node", "src/main.ts"]}))
+        plist.chmod(0o600)
+    monkeypatch.setattr(cli, "run", install)
+    assert cli.setup(options(pi_jobs="local")) == 0
+    receipt = json.loads(cli.state_path().read_text())
+    assert receipt["modules"] == ["pi-shared", "pi-jobs"]
+    assert receipt["pi_jobs"] == {"kind": "local", "url": "http://127.0.0.1:8790"}
+    assert receipt["services"]["pi-jobs"]["path"].endswith("com.local.pi-jobs.plist")
+    assert calls[0][0] == [str(ROOT / "install.sh"), "--minimal", "--with-pi-jobs"]
+    assert "pi-jobs: local server" in capsys.readouterr().out
+    # A later setup that skips pi-jobs keeps the installed server rather than orphaning it.
+    calls.clear()
+    assert cli.setup(options(mode=None, pi_jobs="skip")) == 0
+    receipt = json.loads(cli.state_path().read_text())
+    assert "pi-jobs" in receipt["modules"] and receipt["pi_jobs"]["kind"] == "local"
+
+
+def test_remote_pi_jobs_connects_before_install_and_stores_no_token(isolated, monkeypatch, capsys):
+    home, calls = isolated
+    token = "pjt_" + "z" * 43
+    key = home / "pi-jobs.token"
+    key.write_text(token + "\n")
+    key.chmod(0o600)
+    applied = []
+    monkeypatch.setattr(cli.pi_jobs_setup, "apply", lambda selection, secrets: applied.append(
+        (selection, dict(secrets), len(calls))))
+    url = "https://studio.example.ts.net/pi-jobs"
+    assert cli.setup(options(pi_jobs=url + "/", pi_jobs_token_file=str(key))) == 0
+    assert applied == [({"kind": "remote", "url": url}, {"token": token}, 0)], "connect before install"
+    receipt_text = cli.state_path().read_text()
+    assert token not in receipt_text and str(key) not in receipt_text
+    receipt = json.loads(receipt_text)
+    assert receipt["pi_jobs"] == {"kind": "remote", "url": url} and "pi-jobs" not in receipt["modules"]
+    assert calls[0][0] == [str(ROOT / "install.sh"), "--minimal"]
+    assert token not in capsys.readouterr().out
+
+
+def test_receipt_rejects_local_pi_jobs_without_its_module(isolated):
+    assert cli.setup(options(pi_jobs="local")) == 0
+    receipt = json.loads(cli.state_path().read_text())
+    receipt["modules"].remove("pi-jobs")
+    cli.state_path().write_text(json.dumps(receipt))
+    with pytest.raises(RuntimeError, match="requires the pi-jobs module"):
+        cli.read_state()
+    receipt["pi_jobs"] = {"kind": "remote", "url": "http://jobs.example"}
+    cli.state_path().write_text(json.dumps(receipt))
+    with pytest.raises(RuntimeError):
+        cli.read_state()

@@ -180,6 +180,7 @@ separate steps, not credential or inference checks claimed by setup.
 | [model-gateway](https://github.com/GeorgeTheo99/model-gateway) | recommended | Local model router on `:9111` — one endpoint for cloud providers (BYO keys) and local oMLX MLX models, with protocol translation |
 | [browser-worker](https://github.com/GeorgeTheo99/browser-worker) | recommended | Rendered public browsing on `:8890`, with local production credentials and a provisioned browser; independent of web search |
 | [local_web_search](https://github.com/GeorgeTheo99/local_web_search) | optional | Loopback web search / page retrieval broker on `:8889` (needs a personal Brave Search API key) |
+| [pi-jobs](https://github.com/GeorgeTheo99/pi-jobs) | optional | Scheduled, webhook-triggered and on-demand coding-agent jobs with a web UI on `:8790`; Pi's `jobs_*` tools manage them |
 
 ## Prerequisites
 
@@ -427,6 +428,35 @@ Do not put credentials in manifests or shell history. A key exported only in
 an interactive shell is not necessarily available to the launchd service.
 Include `--with-local_web_search` again when updating that optional module.
 `PI_SETUP_CODE_ROOT` overrides the default `~/local_code` module directory.
+
+### Scheduled agent jobs (pi-jobs, 0.1.42+)
+
+pi-shared's `jobs_*` tools let any Pi session schedule unattended coding-agent
+runs on a [pi-jobs](https://github.com/GeorgeTheo99/pi-jobs) server. Run the
+server on the machine that stays on and holds your repositories; point other
+machines' tools at it.
+
+```sh
+# This Mac runs the server (LaunchAgent on 127.0.0.1:8790):
+pi-shared setup --pi-jobs local --plan
+# Another machine connects its Pi tools to that server:
+pi-shared setup --pi-jobs https://host.example.ts.net/pi-jobs \
+  --pi-jobs-token-file "$HOME/.config/pi-jobs/token" --plan
+```
+
+- `local` installs the pi-jobs module, whose installer points this machine's
+  tools at it with a token minted locally. Sign in to its UI with a token from
+  `pi-jobs token create <name>`.
+- A server URL needs an API token from that server's Settings → API tokens:
+  `--pi-jobs-token-file` takes a private 0600 file; terminal setup also offers
+  hidden entry. After approval, setup checks `/api/health` and the token, then
+  saves `~/.config/pi-jobs/client.json` (0600; a previous one is kept as a
+  private `.bak`). The receipt stores only the URL.
+- Plain HTTP is accepted only for loopback and tailnet hosts. Reaching a server
+  from other machines needs a private reverse proxy such as Tailscale Serve.
+- `skip` (the default) leaves existing pi-jobs configuration alone. Setup never
+  removes an installed pi-jobs server; teardown stops it and keeps its jobs,
+  run logs and tokens.
 
 ## What "done" means
 

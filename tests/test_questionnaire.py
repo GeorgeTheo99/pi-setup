@@ -42,10 +42,10 @@ def answers(monkeypatch, values):
 
 
 def test_fresh_wizard_covers_components_before_approval(isolated, monkeypatch, capsys):
-    answers(monkeypatch, ["later", "skip", "skip", "skip", "skip", "no"])
+    answers(monkeypatch, ["later", "skip", "skip", "skip", "skip", "skip", "no"])
     assert cli.setup(wizard_options()) == 0
     output = capsys.readouterr().out
-    for label in ("Model connection", "Public browser", "Omnigent", "recovery", "Search", "Setup plan"):
+    for label in ("Model connection", "Public browser", "Omnigent", "recovery", "Search", "pi-jobs", "Setup plan"):
         assert label.lower() in output.lower()
     assert list(isolated[0].iterdir()) == []
     assert isolated[1] == []

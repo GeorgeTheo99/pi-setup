@@ -269,6 +269,8 @@ def build(data, archive_config=False):
                       (home / '.pi', 'sessions, credentials, custom settings and research/browser configuration'),
                       (home / '.pi-omlx', 'sessions, credentials and custom settings'),
                       (home / '.claude/model-aliases.json', 'catalog may be used by other clients'),
+                      (home / '.local/state/pi-jobs', 'pi-jobs jobs, run logs, kept worktrees and API tokens'),
+                      (home / '.config/pi-jobs', "pi-jobs client token for Pi's jobs_* tools"),
                       (home / 'Library/Logs', 'service logs'),
                       (home / '.config/pi-shared/update.lock', 'inert operation lock'),
                       ('Homebrew packages and other applications', 'remove packages separately after teardown')]
