@@ -24,7 +24,16 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
-Package **0.1.40** moves to stock Pi **1.3.0**, the newest release available
+Package **0.1.41** moves to stock Pi **1.5.0**. Its lockset was resolved with
+every package at least seven days old and passed a fresh-cache installation from
+registry.npmjs.org. Breaking changes since 1.3.0: tool arguments are validated as
+JSON Schema by `@earendil-works/pi-schema`, so TypeBox-only features
+(`Type.Refine()`, codecs, `Format.Set()` formats, `Type.BigInt()`/`Undefined()`)
+no longer apply to them, and validation errors use pi-schema's wording. The
+published `@earendil-works/pi-ai` no longer re-exports TypeBox's `Type`/`Static`
+types (Pi still maps the import at runtime); import them from `typebox`.
+Claude Fable 5.2 needs Pi 1.5.1 for the `/model` picker; on 1.5.0, pass it by ID.
+Package 0.1.40 moves to stock Pi **1.3.0**, the newest release available
 through the Databricks npm proxy, after its complete lockset passed a fresh-cache
 installation. Breaking changes since 1.0.3: `before_agent_start` also fires for
 custom-message runs (`event.messageType` is `"user"` or `"custom"`; only user

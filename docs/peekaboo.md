@@ -40,7 +40,7 @@ Then allow Peekaboo under **Accessibility** and **Screen & System Audio Recordin
 in System Settings › Privacy & Security, keep the app running, restart Pi and run
 `check`. Bridge MCP fails at startup until Screen Recording is granted.
 
-New setups default to official **Pi 1.3.0 native MCP**, writing
+New setups default to official **Pi 1.5.0 native MCP**, writing
 `<agent-dir>/mcp.json`. `--agent-dir ABS` selects the profile; otherwise
 `PI_CODING_AGENT_DIR` or `~/.pi/agent` is used. Detected legacy adapter declarations
 or an existing legacy config without a native target retain the adapter route with

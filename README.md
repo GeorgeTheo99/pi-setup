@@ -79,7 +79,7 @@ module installers used below. The new CLI defaults writable module checkouts to
 Peekaboo MCP server: full-catalog `--mode direct`, or full-catalog desktop-app
 permission owner `--mode bridge --bridge-socket /absolute/path`. Omitted mode preserves an exact existing route, otherwise defaults to
 direct; conflicting entries are never migrated. New profiles target official
-Pi 1.3.0 native `<agent-dir>/mcp.json`; detected legacy adapter installs remain on
+Pi 1.5.0 native `<agent-dir>/mcp.json`; detected legacy adapter installs remain on
 the adapter with a warning until [explicit MCP migration](docs/mcp.md). Start with
 `pi-shared peekaboo plan --json`; applying requires explicit approval and that
 plan's ID. JSON schema 2 includes route, socket and permission-source evidence.
@@ -494,7 +494,7 @@ bin/doctor --smoke-model sonnet         # opt into one real completion via pi-so
   Any failed installer or doctor exits nonzero; earlier completed installs
   are not rolled back. No success message follows failed checks.
 
-Inside Pi 1.3.0, `/mcp` manages official native MCP servers unless an installed
+Inside Pi 1.5.0, `/mcp` manages official native MCP servers unless an installed
 adapter replaces that command. [MCP setup/migration](docs/mcp.md) explains the
 profile configuration and explicit approval steps. Browser/search wrappers remain
 independent of both MCP backends. With the environment-doctor extension loaded,

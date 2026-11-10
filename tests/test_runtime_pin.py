@@ -9,11 +9,12 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = "@earendil-works/pi-coding-agent"
-VERIFIED_PI = "1.3.0"
-# Installed from the approved registry with a fresh cache on 2026-10-25:
-# macOS arm64, Node 26.12.0, npm 11.20.0; 118 installed, no optional or
-# nonoptional omissions or version mismatches.
-VERIFIED_LOCK_SHA256 = "a7137c4a62a83324d776e21f4bc4b90e0408e54c2b6adc7d60685ef55f33c210"
+VERIFIED_PI = "1.5.0"
+# Installed from registry.npmjs.org with a fresh cache on 2026-11-09: macOS arm64,
+# Node 26.12.1, npm 11.20.0; 123 installed, no optional or nonoptional omissions
+# or version mismatches. Locked with --before=2026-11-02T12:00:00Z, so every
+# package is at least seven days old.
+VERIFIED_LOCK_SHA256 = "6c449f21d20d33c5756989b0fb229f48e9f541f5a06acb4c239afa604b60156c"
 
 
 def test_runtime_manifest_pins_one_verified_version():
