@@ -83,6 +83,9 @@ def private_plist(path):
     return data
 
 
+PI_JOBS_ENV = {"PATH", "PI_JOBS_PORT", "PI_JOBS_STATE_DIR", "PI_JOBS_ALLOWED_HOSTS"}
+
+
 def identity(data):
     values = {k: data.get(k) for k in ("Label", "WorkingDirectory", "ProgramArguments")}
     return hashlib.sha256(json.dumps(values, sort_keys=True).encode()).hexdigest()
@@ -204,6 +207,9 @@ def service_environment(data):
         env = current.get("EnvironmentVariables", {})
         if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()):
             raise RuntimeError(f"Invalid {name} service environment")
+        if name == "pi-jobs" and (set(env) - PI_JOBS_ENV or env.get("PI_JOBS_PORT", "8790") != "8790"):
+            # Its installer rewrites only these settings; never drop others silently.
+            raise RuntimeError("pi-jobs has unsupported custom environment entries or port; refusing to discard them")
         if name in {"model-gateway", "local_web_search"}:
             allowed = GATEWAY_ENV if name == "model-gateway" else SEARCH_ENV
             if set(env) - allowed:

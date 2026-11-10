@@ -39,6 +39,8 @@ import setup_menu
 
 FORMULA = "georgetheo99/tap/pi-shared"
 MODULES = {"pi-shared", "model-gateway", "browser-worker", "local_web_search", "pi-jobs"}
+MANAGED_JOBS = ("This Mac runs a setup-managed pi-jobs server; keep --pi-jobs local, or remove it "
+                "with pi-shared uninstall before connecting to another server.")
 OMLX_FORMULA = "jundot/omlx/omlx"
 OMLX_GUIDE = "https://github.com/jundot/omlx#installation"
 VERBOSE_HELP = "Show full installer, Homebrew and check output (default: one line per stage; failures always show details)"
@@ -442,8 +444,11 @@ def setup(args):
     args.search_selection, args.search_secrets = search_setup.collect(
         args, previous, env, code_root, interactive and not remote, choose)
     args.with_search = args.search_selection["kind"] == "local"
+    managed_jobs = bool(previous and "pi-jobs" in previous["modules"])
+    if managed_jobs and getattr(args, "pi_jobs", None) not in (None, "local", "skip"):
+        raise RuntimeError(MANAGED_JOBS)
     args.pi_jobs_selection, args.pi_jobs_secrets = pi_jobs_setup.collect(
-        args, previous, interactive and not remote, choose)
+        args, previous, interactive and not remote and not managed_jobs, choose)
     flags = ["--minimal"]
     modules = ["pi-shared"]
     if args.mode not in {"later", "existing-gateway", "direct"}:
@@ -458,9 +463,22 @@ def setup(args):
         # Adding model access must not silently drop services owned by the saved
         # setup. Service removal belongs to explicit teardown, not composition.
         modules = list(dict.fromkeys([*modules, *previous["modules"]]))
-    if "pi-jobs" in modules and args.pi_jobs_selection["kind"] == "skip":
-        # A kept pi-jobs module keeps its server; removal belongs to teardown.
+    if previous and "pi-jobs" in previous["modules"] and "pi-jobs" not in modules:
+        # Setup never drops a managed pi-jobs server; removal belongs to teardown.
+        modules.append("pi-jobs")
+    if "pi-jobs" in modules:
+        if args.pi_jobs_selection["kind"] == "remote":
+            raise RuntimeError(MANAGED_JOBS)
         args.pi_jobs_selection = {"kind": "local", "url": pi_jobs_setup.LOCAL_URL}
+    adopt = pi_jobs_setup.unowned_server(previous) if args.pi_jobs_selection["kind"] == "local" else None
+    if adopt and not getattr(args, "pi_jobs_adopt", False):
+        question = (f"A pi-jobs server installed outside setup runs from {adopt}. Let setup rebuild it from the "
+                    "managed module? Jobs, tokens and proxy host names are kept.")
+        if not (interactive and choose(question, {"adopt": "Take it over", "cancel": "Cancel setup"}) == "adopt"):
+            if interactive:
+                raise KeyboardInterrupt
+            raise RuntimeError(f"A pi-jobs LaunchAgent installed outside setup runs from {adopt}. Add --pi-jobs-adopt "
+                               "to let setup rebuild it from the managed module (jobs, tokens and proxy host names are kept).")
     flags += [f"--with-{m}" for m in modules[1:]]
     if args.update:
         flags.append("--update")
@@ -497,6 +515,9 @@ def setup(args):
             print("  No local gateway or oMLX service installed; no remote service operations or credential provisioning.")
         search_setup.describe(args.search_selection)
         pi_jobs_setup.describe(args.pi_jobs_selection)
+        if adopt:
+            print(f"  pi-jobs: take over the existing LaunchAgent (now running {adopt}); it is rebuilt from "
+                  "the managed module with the same state directory and proxy host names.")
         if args.search_selection["kind"] == "local" and (
                 getattr(args, "decodo_key_file", None) or "decodo_key" in args.search_secrets):
             print(f"  Decodo token: provision {args.search_selection['data_dir']}/decodo_key if absent "
@@ -707,8 +728,8 @@ def read_state(allow_incomplete=False):
             raise RuntimeError("Local search requires the selected search module")
     if "pi_jobs" in data:
         pi_jobs_setup.validate_saved(data["pi_jobs"])
-    if data.get("pi_jobs", {}).get("kind") == "local" and "pi-jobs" not in data["modules"]:
-        raise RuntimeError("A local pi-jobs selection requires the pi-jobs module")
+    if (data.get("pi_jobs", {}).get("kind") == "local") != ("pi-jobs" in data["modules"]):
+        raise RuntimeError("The pi-jobs module and a local pi-jobs selection go together")
     if data.get("mode") == "direct":
         if (data["version"] != 2 or data.get("settings", {}).get("PI_SHARED_DIRECT_ONLY") != "1"
                 or data.get("bootstrap_launchers") is not True or not safe_path(data.get("cli_file"))
@@ -1147,6 +1168,8 @@ Safety and prerequisites:
     jobs.add_argument("--pi-jobs", metavar="local|URL|skip",
                       help="Run a pi-jobs server on this Mac, or connect Pi's jobs_* tools to a server URL (HTTPS, or HTTP for loopback/tailnet)")
     jobs.add_argument("--pi-jobs-token-file", help="Private 0600 file with that server's API token (pjt_...)")
+    jobs.add_argument("--pi-jobs-adopt", action="store_true", default=False,
+                      help="Let setup take over a pi-jobs LaunchAgent installed outside setup (keeps its data)")
     optional = p.add_argument_group("Optional checks and guidance")
     omnigent = optional.add_mutually_exclusive_group()
     omnigent.add_argument("--with-omnigent", action="store_true", default=None, help="Require native-Pi prerequisites; no Omnigent install, session launch, or inference")

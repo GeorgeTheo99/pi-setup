@@ -209,3 +209,64 @@ def test_configure_and_describe_never_write_or_show_tokens(home, capsys):
     out = capsys.readouterr().out
     assert TOKEN not in out and "pi-jobs token create" in out and REMOTE in out
 
+
+
+def test_the_token_never_goes_through_a_proxy(home, server, monkeypatch):
+    monkeypatch.setattr(jobs, "_get", real_get)
+    for name in ("http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")  # nothing listens; a proxied request would fail
+    monkeypatch.delenv("no_proxy", raising=False)
+    monkeypatch.delenv("NO_PROXY", raising=False)
+    jobs.apply({"kind": "remote", "url": server["url"]}, {"token": TOKEN})
+    assert client(home)["token"] == TOKEN
+
+
+def test_a_wrong_host_name_explains_allowed_hosts(home, monkeypatch):
+    def refuse(request, timeout):
+        raise jobs.urllib.error.HTTPError(request.full_url, 403, "Forbidden", {}, None)
+    monkeypatch.setattr(jobs, "_get", real_get)
+    monkeypatch.setattr(jobs.urllib.request.OpenerDirector, "open", lambda self, request, timeout: refuse(request, timeout))
+    with pytest.raises(RuntimeError, match="PI_JOBS_ALLOWED_HOSTS"):
+        jobs._probe(REMOTE, TOKEN)
+
+
+def test_local_sets_aside_a_remote_client_config_and_configure_tolerates_bad_files(home, capsys):
+    private(home / ".config/pi-jobs/client.json", json.dumps({"url": REMOTE, "token": TOKEN}))
+    jobs.apply({"kind": "local", "url": jobs.LOCAL_URL}, {})
+    assert not (home / ".config/pi-jobs/client.json").exists()
+    [backup] = (home / ".config/pi-jobs").glob("client.json.*.bak")
+    assert json.loads(backup.read_text())["url"] == REMOTE and backup.stat().st_mode & 0o777 == 0o600
+    assert "revoke its token" in capsys.readouterr().out
+    # A loopback client config is the local server's own; leave it.
+    private(home / ".config/pi-jobs/client.json", json.dumps({"url": jobs.LOCAL_URL, "token": TOKEN}))
+    jobs.apply({"kind": "local", "url": jobs.LOCAL_URL}, {})
+    assert client(home)["url"] == jobs.LOCAL_URL
+    (home / ".config/pi-jobs/client.json").chmod(0o644)
+    jobs.configure({"kind": "local", "url": jobs.LOCAL_URL})
+    assert "0600" in capsys.readouterr().out
+
+
+def test_a_fresh_token_replaces_an_unreadable_client_config(home, server, monkeypatch):
+    monkeypatch.setattr(jobs, "_get", real_get)
+    private(home / ".config/pi-jobs/client.json", "{broken")
+    with pytest.raises(RuntimeError, match="valid owner-only"):
+        jobs.apply({"kind": "remote", "url": server["url"]}, {})
+    jobs.apply({"kind": "remote", "url": server["url"]}, {"token": TOKEN})
+    assert client(home)["token"] == TOKEN
+    assert len(list((home / ".config/pi-jobs").glob("client.json.*.bak"))) == 1
+
+
+def test_unowned_server_detection_is_read_only_and_checks_settings(home):
+    import plistlib
+    assert jobs.unowned_server({}) is None
+    plist = home / "Library/LaunchAgents/com.local.pi-jobs.plist"
+    plist.parent.mkdir(parents=True)
+    service = {"Label": "com.local.pi-jobs", "WorkingDirectory": "/Users/me/pi-jobs",
+               "EnvironmentVariables": {"PATH": "/bin", "PI_JOBS_PORT": "8790", "PI_JOBS_ALLOWED_HOSTS": "h.ts.net"}}
+    plist.write_bytes(plistlib.dumps(service))
+    assert jobs.unowned_server({}) == "/Users/me/pi-jobs"
+    assert jobs.unowned_server({"services": {"pi-jobs": {"path": str(plist), "identity": "0" * 64}}}) is None
+    service["EnvironmentVariables"]["PI_JOBS_REPO_ROOTS"] = "/code"
+    plist.write_bytes(plistlib.dumps(service))
+    with pytest.raises(RuntimeError, match="PI_JOBS_REPO_ROOTS"):
+        jobs.unowned_server({})

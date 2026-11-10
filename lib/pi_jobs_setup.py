@@ -11,6 +11,7 @@ import ipaddress
 import json
 import os
 from pathlib import Path
+import plistlib
 import re
 import stat
 import tempfile
@@ -23,8 +24,47 @@ import search_setup
 
 LOCAL_URL = "http://127.0.0.1:8790"
 API_VERSION = 1
+LABEL = "com.local.pi-jobs"
+# install.sh writes exactly these and recovers the last three from the plist on reinstall.
+SERVICE_ENV = {"PATH", "PI_JOBS_PORT", "PI_JOBS_STATE_DIR", "PI_JOBS_ALLOWED_HOSTS"}
 _TOKEN = re.compile(r"pjt_[A-Za-z0-9_-]{20,200}")
 _PROBE_TIMEOUT = 10
+_PROBE_DEADLINE = 15
+_MAX_RESPONSE = 65536
+
+
+def plist_path():
+    return Path.home() / "Library/LaunchAgents" / (LABEL + ".plist")
+
+
+def check_service_environment(service):
+    """Refuse settings install.sh would silently drop, and a port other than the selected URL's."""
+    env = service.get("EnvironmentVariables", {})
+    if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()):
+        raise RuntimeError("Invalid pi-jobs service environment")
+    if set(env) - SERVICE_ENV:
+        raise RuntimeError("pi-jobs has custom LaunchAgent settings (" + ", ".join(sorted(set(env) - SERVICE_ENV))
+                           + ") that its installer would drop; move them into install.sh options first")
+    if env.get("PI_JOBS_PORT", "8790") != "8790":
+        raise RuntimeError("pi-jobs setup manages the server on port 8790 only")
+    return env
+
+
+def unowned_server(previous):
+    """The working directory of a pi-jobs LaunchAgent this setup does not own, or None. Read-only."""
+    if (previous or {}).get("services", {}).get("pi-jobs"):
+        return None
+    path = plist_path()
+    if not path.exists() and not path.is_symlink():
+        return None
+    try:
+        service = plistlib.loads(path.read_bytes())
+    except (OSError, ValueError):
+        raise RuntimeError(f"Unreadable pi-jobs LaunchAgent {path}; reconcile it before setup") from None
+    if not isinstance(service, dict) or service.get("Label") != LABEL:
+        raise RuntimeError(f"Unexpected pi-jobs LaunchAgent {path}; reconcile it before setup")
+    check_service_environment(service)
+    return str(service.get("WorkingDirectory", "unknown directory"))
 
 
 def client_path():
@@ -79,6 +119,14 @@ def _read_token_file(value):
             raise
         raise RuntimeError(f"pi-jobs token file {value} must be an absolute path to an owner-owned, regular, "
                            "single-link 0600 file holding one token") from None
+
+
+def _is_loopback(url):
+    host = urllib.parse.urlsplit(url).hostname or ""
+    try:
+        return host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _read_client():
@@ -185,13 +233,29 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 def _get(url, token=None):
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
-    opener = urllib.request.build_opener(_NoRedirect)
+    # Never route the token through an environment or system proxy.
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
+    deadline = time.monotonic() + _PROBE_DEADLINE
     try:
         with opener.open(request, timeout=_PROBE_TIMEOUT) as response:
-            return json.loads(response.read(65536))
+            body = b""
+            while len(body) <= _MAX_RESPONSE:
+                if time.monotonic() > deadline:
+                    raise RuntimeError("The pi-jobs server answered too slowly")
+                chunk = response.read(4096)
+                if not chunk:
+                    break
+                body += chunk
+            if len(body) > _MAX_RESPONSE:
+                raise RuntimeError("The pi-jobs server's answer is too large")
+            return json.loads(body)
     except urllib.error.HTTPError as exc:
+        exc.close()
         if exc.code == 401:
             raise RuntimeError("The pi-jobs server rejected the token; create a new one in its Settings → API tokens") from None
+        if exc.code == 403:
+            raise RuntimeError("The pi-jobs server refused this host name; add it to the server's "
+                               "PI_JOBS_ALLOWED_HOSTS (rerun its install.sh)") from None
         raise RuntimeError(f"The pi-jobs server answered HTTP {exc.code}") from None
     except (urllib.error.URLError, OSError, ValueError):
         raise RuntimeError("The pi-jobs server is unreachable or did not answer with JSON; check the URL and tailnet") from None
@@ -204,21 +268,35 @@ def _probe(url, token):
     _get(f"{url}/api/session", token)
 
 
+def _backup(path):
+    """Keep a client config privately under a unique name; the original stays in place."""
+    for attempt in range(100):
+        backup = path.with_name(f"client.json.{time.strftime('%Y%m%d-%H%M%S')}-{attempt}.bak")
+        try:
+            os.link(path, backup)
+        except FileExistsError:
+            continue
+        os.chmod(backup, 0o600)
+        print(f"  Kept the previous pi-jobs client config as {backup}; revoke its token on that server "
+              "(Settings → API tokens) when no longer needed.")
+        return backup
+    raise RuntimeError("Could not back up the existing pi-jobs client config")
+
+
 def _write_client(url, token):
     path = client_path()
     search_setup._private_directory(path.parent)
     search_setup._safe_path(path)
-    if path.exists():
-        # Keep the previous connection, privately, instead of discarding it.
-        backup = path.with_name(f"client.json.{time.strftime('%Y%m%d-%H%M%S')}.bak")
-        os.replace(path, backup)
-        os.chmod(backup, 0o600)
     fd, temp = tempfile.mkstemp(prefix=".client-", dir=path.parent)
     try:
         with os.fdopen(fd, "w") as stream:
             os.fchmod(stream.fileno(), 0o600)
             json.dump({"url": url, "token": token}, stream, indent=2)
             stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        if path.exists():
+            _backup(path)
         os.replace(temp, path)
     finally:
         if os.path.exists(temp):
@@ -226,13 +304,25 @@ def _write_client(url, token):
 
 
 def apply(selection, secrets):
-    """Before module installation: for a remote server, check it and save the client config."""
+    """Before module installation. Remote: check the server and token, then save the client config.
+    Local: set aside a client config that points elsewhere, so the installer connects this server."""
     validate_saved(selection)
     if not isinstance(secrets, dict) or set(secrets) - ({"token"} if selection["kind"] == "remote" else set()):
         raise RuntimeError("Invalid pending pi-jobs credentials")
+    path = client_path()
+    try:
+        current = _read_client()
+    except RuntimeError:
+        if not (selection["kind"] == "remote" and "token" in secrets):
+            raise
+        current = None  # replaced below; an unreadable file is kept as a backup
+    if selection["kind"] == "local":
+        if current and not _is_loopback(current["url"]):
+            _backup(path)
+            os.unlink(path)
+        return
     if selection["kind"] != "remote":
         return
-    current = _read_client()
     saved = current if current and current["url"].rstrip("/") == selection["url"] else None
     if "token" in secrets:
         token = _token(secrets["token"])
@@ -250,10 +340,15 @@ def configure(selection):
     validate_saved(selection)
     if selection["kind"] == "skip":
         return
-    current = _read_client()
+    try:
+        current = _read_client()
+    except RuntimeError as exc:
+        print(f"  ! pi-jobs: {exc}")
+        return
     if not current:
         print(f"  ! pi-jobs: {client_path()} is missing; rerun pi-shared setup to reconnect Pi's jobs_* tools.")
-    elif current["url"].rstrip("/") != selection["url"]:
+    elif current["url"].rstrip("/") != selection["url"] and not (
+            selection["kind"] == "local" and _is_loopback(current["url"])):
         print(f"  ! pi-jobs: Pi's jobs_* tools use {current['url']}, not the selected {selection['url']}.")
 
 

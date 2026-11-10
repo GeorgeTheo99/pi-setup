@@ -454,9 +454,16 @@ pi-shared setup --pi-jobs https://host.example.ts.net/pi-jobs \
   private `.bak`). The receipt stores only the URL.
 - Plain HTTP is accepted only for loopback and tailnet hosts. Reaching a server
   from other machines needs a private reverse proxy such as Tailscale Serve.
+- A pi-jobs server installed outside setup (its own `install.sh`) is taken over
+  only with `--pi-jobs-adopt` (or a guided confirmation); it is rebuilt from the
+  managed module with the same state directory and proxy host names. Custom
+  LaunchAgent settings its installer would drop make setup refuse instead.
+- A remote URL replaces an existing client config only after the server and
+  token check out; switching to `local` sets a remote one aside. Old configs are
+  kept as private `.bak` files; revoke their tokens on the old server.
 - `skip` (the default) leaves existing pi-jobs configuration alone. Setup never
-  removes an installed pi-jobs server; teardown stops it and keeps its jobs,
-  run logs and tokens.
+  removes a setup-managed pi-jobs server and won't connect such a Mac to another
+  server; teardown stops it and keeps its jobs, run logs and tokens.
 
 ## What "done" means
 

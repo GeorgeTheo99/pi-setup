@@ -408,9 +408,61 @@ def test_receipt_rejects_local_pi_jobs_without_its_module(isolated):
     receipt = json.loads(cli.state_path().read_text())
     receipt["modules"].remove("pi-jobs")
     cli.state_path().write_text(json.dumps(receipt))
-    with pytest.raises(RuntimeError, match="requires the pi-jobs module"):
+    with pytest.raises(RuntimeError, match="go together"):
         cli.read_state()
     receipt["pi_jobs"] = {"kind": "remote", "url": "http://jobs.example"}
     cli.state_path().write_text(json.dumps(receipt))
     with pytest.raises(RuntimeError):
         cli.read_state()
+
+
+def _pi_jobs_plist(home, working_directory="/x", env=None):
+    import plistlib
+    plist = home / "Library/LaunchAgents/com.local.pi-jobs.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_bytes(plistlib.dumps({"Label": "com.local.pi-jobs", "WorkingDirectory": working_directory,
+                                      "ProgramArguments": ["node", "src/main.ts"],
+                                      "EnvironmentVariables": env or {"PI_JOBS_PORT": "8790"}}))
+    plist.chmod(0o600)
+    return plist
+
+
+def test_an_independent_pi_jobs_server_is_only_taken_over_explicitly(isolated, capsys):
+    home, calls = isolated
+    _pi_jobs_plist(home, "/Users/me/local_code/pi-jobs")
+    with pytest.raises(RuntimeError, match="--pi-jobs-adopt"):
+        cli.setup(options(pi_jobs="local"))
+    assert calls == []
+    assert cli.setup(options(pi_jobs="local", pi_jobs_adopt=True, plan=True)) == 0
+    assert "take over the existing LaunchAgent (now running /Users/me/local_code/pi-jobs)" in capsys.readouterr().out
+    assert cli.setup(options(pi_jobs="local", pi_jobs_adopt=True)) == 0
+    receipt = json.loads(cli.state_path().read_text())
+    assert receipt["services"]["pi-jobs"]["path"].endswith("com.local.pi-jobs.plist")
+    # Once owned, later setups need no flag.
+    assert cli.setup(options(mode=None, pi_jobs="local")) == 0
+
+
+def test_a_managed_pi_jobs_server_stays_tracked_and_blocks_remote(isolated):
+    home, calls = isolated
+    _pi_jobs_plist(home)
+    assert cli.setup(options(pi_jobs="local", pi_jobs_adopt=True)) == 0
+    # An explicit mode change without pi-jobs flags keeps the module and its ownership.
+    assert cli.setup(options(mode="later", pi_jobs="skip")) == 0
+    receipt = json.loads(cli.state_path().read_text())
+    assert "pi-jobs" in receipt["modules"] and receipt["pi_jobs"]["kind"] == "local"
+    with pytest.raises(RuntimeError, match="setup-managed pi-jobs server"):
+        cli.setup(options(mode=None, pi_jobs="https://studio.example.ts.net/pi-jobs"))
+
+
+def test_update_refuses_to_drop_custom_pi_jobs_settings(isolated):
+    home, calls = isolated
+    plist = _pi_jobs_plist(home)
+    assert cli.setup(options(pi_jobs="local", pi_jobs_adopt=True)) == 0
+    data = cli.read_state()
+    cli.update_support.service_environment(data)
+    _pi_jobs_plist(home, env={"PI_JOBS_PORT": "8790", "PI_JOBS_REPO_ROOTS": "/code"})
+    receipt = json.loads(cli.state_path().read_text())
+    receipt["services"]["pi-jobs"]["identity"] = cli.update_support.identity(cli.update_support.read_service(plist, "pi-jobs"))
+    cli.state_path().write_text(json.dumps(receipt))
+    with pytest.raises(RuntimeError, match="pi-jobs has unsupported custom environment"):
+        cli.update_support.service_environment(cli.read_state())

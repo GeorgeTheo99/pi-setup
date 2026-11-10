@@ -269,11 +269,20 @@ def build(data, archive_config=False):
                       (home / '.pi', 'sessions, credentials, custom settings and research/browser configuration'),
                       (home / '.pi-omlx', 'sessions, credentials and custom settings'),
                       (home / '.claude/model-aliases.json', 'catalog may be used by other clients'),
-                      (home / '.local/state/pi-jobs', 'pi-jobs jobs, run logs, kept worktrees and API tokens'),
-                      (home / '.config/pi-jobs', "pi-jobs client token for Pi's jobs_* tools"),
                       (home / 'Library/Logs', 'service logs'),
                       (home / '.config/pi-shared/update.lock', 'inert operation lock'),
                       ('Homebrew packages and other applications', 'remove packages separately after teardown')]
+    if data.get('pi_jobs', {}).get('kind', 'skip') != 'skip':
+        state = home / '.local/state/pi-jobs'
+        saved = data.get('services', {}).get('pi-jobs')
+        if saved and checked(Path(saved['path'])) is not None:
+            env = update_support.read_service(Path(saved['path']), 'pi-jobs').get('EnvironmentVariables', {})
+            state = Path(env.get('PI_JOBS_STATE_DIR') or state)
+        if 'pi-jobs' in data['modules']:
+            plan.retained.append((state, 'pi-jobs jobs, run logs, kept worktrees and API tokens'))
+            plan.retained.append((Path(settings.get('PI_SHARED_BIN_DIR', home / '.local/bin')) / 'pi-jobs',
+                                  'pi-jobs CLI link into the retained module checkout'))
+        plan.retained.append((home / '.config/pi-jobs', "Pi's pi-jobs client token; revoke it on its server if unused"))
     plan.add(home / '.config/pi-shared/setup.json', 'Archive setup receipt (last; retryable after failure)')
     return plan
 
