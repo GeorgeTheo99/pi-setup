@@ -453,7 +453,10 @@ pi-shared setup --pi-jobs https://host.example.ts.net/pi-jobs \
   saves `~/.config/pi-jobs/client.json` (0600; a previous one is kept as a
   private `.bak`). The receipt stores only the URL.
 - Plain HTTP is accepted only for loopback and tailnet hosts. Reaching a server
-  from other machines needs a private reverse proxy such as Tailscale Serve.
+  from other machines needs a private reverse proxy such as Tailscale Serve;
+  set its host names once with `PI_JOBS_ALLOWED_HOSTS=<hosts> ./install.sh` in
+  the pi-jobs module directory. Setup and update keep them and ignore any
+  `PI_JOBS_*` variables in the calling shell.
 - A pi-jobs server installed outside setup (its own `install.sh`) is taken over
   only with `--pi-jobs-adopt` (or a guided confirmation); it is rebuilt from the
   managed module with the same state directory and proxy host names. Custom

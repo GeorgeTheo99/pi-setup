@@ -7,26 +7,26 @@ it to subprocesses. A local server's client token is minted by the pi-jobs insta
 """
 from __future__ import annotations
 
+import http.client
 import ipaddress
 import json
 import os
 from pathlib import Path
-import plistlib
 import re
 import stat
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 
 import search_setup
+import update_support
 
 LOCAL_URL = "http://127.0.0.1:8790"
 API_VERSION = 1
 LABEL = "com.local.pi-jobs"
-# install.sh writes exactly these and recovers the last three from the plist on reinstall.
-SERVICE_ENV = {"PATH", "PI_JOBS_PORT", "PI_JOBS_STATE_DIR", "PI_JOBS_ALLOWED_HOSTS"}
 _TOKEN = re.compile(r"pjt_[A-Za-z0-9_-]{20,200}")
 _PROBE_TIMEOUT = 10
 _PROBE_DEADLINE = 15
@@ -42,8 +42,9 @@ def check_service_environment(service):
     env = service.get("EnvironmentVariables", {})
     if not isinstance(env, dict) or any(not isinstance(k, str) or not isinstance(v, str) for k, v in env.items()):
         raise RuntimeError("Invalid pi-jobs service environment")
-    if set(env) - SERVICE_ENV:
-        raise RuntimeError("pi-jobs has custom LaunchAgent settings (" + ", ".join(sorted(set(env) - SERVICE_ENV))
+    extra = set(env) - update_support.PI_JOBS_ENV
+    if extra:
+        raise RuntimeError("pi-jobs has custom LaunchAgent settings (" + ", ".join(sorted(extra))
                            + ") that its installer would drop; move them into install.sh options first")
     if env.get("PI_JOBS_PORT", "8790") != "8790":
         raise RuntimeError("pi-jobs setup manages the server on port 8790 only")
@@ -58,9 +59,11 @@ def unowned_server(previous):
     if not path.exists() and not path.is_symlink():
         return None
     try:
-        service = plistlib.loads(path.read_bytes())
-    except (OSError, ValueError):
-        raise RuntimeError(f"Unreadable pi-jobs LaunchAgent {path}; reconcile it before setup") from None
+        # The same owner-only checks that service ownership applies after approval.
+        service = update_support.private_plist(path)
+    except (RuntimeError, OSError, ValueError):
+        raise RuntimeError(f"Unreadable or unsafe pi-jobs LaunchAgent {path} (needs owner-only 0600); "
+                           "reconcile it before setup") from None
     if not isinstance(service, dict) or service.get("Label") != LABEL:
         raise RuntimeError(f"Unexpected pi-jobs LaunchAgent {path}; reconcile it before setup")
     check_service_environment(service)
@@ -208,7 +211,10 @@ def collect(args, previous, interactive, choose):
         return selection, {}
     if token_file is not None:
         return selection, {"token": _read_token_file(token_file)}
-    current = _read_client()
+    try:
+        current = _read_client()
+    except RuntimeError:
+        current = None  # unreadable: a new token replaces it after approval
     if current and current["url"].rstrip("/") == url and _TOKEN.fullmatch(current["token"]):
         if interactive:
             print(f"Keeping the saved pi-jobs token for {url}.")
@@ -232,17 +238,34 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 def _get(url, token=None):
+    """One GET with an overall deadline covering connect, TLS, headers and body."""
+    result = {}
+
+    def work():
+        try:
+            result["value"] = _fetch(url, token)
+        except BaseException as exc:  # handed to the caller below
+            result["error"] = exc
+
+    worker = threading.Thread(target=work, daemon=True)
+    worker.start()
+    worker.join(_PROBE_DEADLINE)
+    if worker.is_alive():
+        raise RuntimeError("The pi-jobs server answered too slowly; check the URL and tailnet")
+    if "error" in result:
+        raise result["error"]
+    return result["value"]
+
+
+def _fetch(url, token):
     request = urllib.request.Request(url, headers={"Authorization": f"Bearer {token}"} if token else {})
     # Never route the token through an environment or system proxy.
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect)
-    deadline = time.monotonic() + _PROBE_DEADLINE
     try:
         with opener.open(request, timeout=_PROBE_TIMEOUT) as response:
             body = b""
             while len(body) <= _MAX_RESPONSE:
-                if time.monotonic() > deadline:
-                    raise RuntimeError("The pi-jobs server answered too slowly")
-                chunk = response.read(4096)
+                chunk = response.read1(4096)
                 if not chunk:
                     break
                 body += chunk
@@ -257,7 +280,7 @@ def _get(url, token=None):
             raise RuntimeError("The pi-jobs server refused this host name; add it to the server's "
                                "PI_JOBS_ALLOWED_HOSTS (rerun its install.sh)") from None
         raise RuntimeError(f"The pi-jobs server answered HTTP {exc.code}") from None
-    except (urllib.error.URLError, OSError, ValueError):
+    except (urllib.error.URLError, http.client.HTTPException, OSError, ValueError):
         raise RuntimeError("The pi-jobs server is unreachable or did not answer with JSON; check the URL and tailnet") from None
 
 
@@ -303,9 +326,17 @@ def _write_client(url, token):
             os.unlink(temp)
 
 
+def restore(backup):
+    """Undo apply's set-aside after a failed installation, unless something new took its place."""
+    path = client_path()
+    if backup and not path.exists() and not path.is_symlink():
+        os.link(backup, path)
+
+
 def apply(selection, secrets):
     """Before module installation. Remote: check the server and token, then save the client config.
-    Local: set aside a client config that points elsewhere, so the installer connects this server."""
+    Local: set aside a client config that points elsewhere, so the installer connects this server;
+    returns that backup, which the caller restores if installation fails."""
     validate_saved(selection)
     if not isinstance(secrets, dict) or set(secrets) - ({"token"} if selection["kind"] == "remote" else set()):
         raise RuntimeError("Invalid pending pi-jobs credentials")
@@ -318,11 +349,12 @@ def apply(selection, secrets):
         current = None  # replaced below; an unreadable file is kept as a backup
     if selection["kind"] == "local":
         if current and not _is_loopback(current["url"]):
-            _backup(path)
+            backup = _backup(path)
             os.unlink(path)
-        return
+            return backup
+        return None
     if selection["kind"] != "remote":
-        return
+        return None
     saved = current if current and current["url"].rstrip("/") == selection["url"] else None
     if "token" in secrets:
         token = _token(secrets["token"])
@@ -333,6 +365,7 @@ def apply(selection, secrets):
     _probe(selection["url"], token)
     if not saved or saved["token"] != token or saved["url"] != selection["url"]:
         _write_client(selection["url"], token)
+    return None
 
 
 def configure(selection):

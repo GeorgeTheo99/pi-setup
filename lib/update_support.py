@@ -83,6 +83,7 @@ def private_plist(path):
     return data
 
 
+# pi-jobs' install.sh writes exactly these and recovers the last three from its plist.
 PI_JOBS_ENV = {"PATH", "PI_JOBS_PORT", "PI_JOBS_STATE_DIR", "PI_JOBS_ALLOWED_HOSTS"}
 
 

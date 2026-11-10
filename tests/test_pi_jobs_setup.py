@@ -264,9 +264,79 @@ def test_unowned_server_detection_is_read_only_and_checks_settings(home):
     service = {"Label": "com.local.pi-jobs", "WorkingDirectory": "/Users/me/pi-jobs",
                "EnvironmentVariables": {"PATH": "/bin", "PI_JOBS_PORT": "8790", "PI_JOBS_ALLOWED_HOSTS": "h.ts.net"}}
     plist.write_bytes(plistlib.dumps(service))
+    with pytest.raises(RuntimeError, match="owner-only 0600"):
+        jobs.unowned_server({})
+    plist.chmod(0o600)
     assert jobs.unowned_server({}) == "/Users/me/pi-jobs"
     assert jobs.unowned_server({"services": {"pi-jobs": {"path": str(plist), "identity": "0" * 64}}}) is None
     service["EnvironmentVariables"]["PI_JOBS_REPO_ROOTS"] = "/code"
     plist.write_bytes(plistlib.dumps(service))
     with pytest.raises(RuntimeError, match="PI_JOBS_REPO_ROOTS"):
         jobs.unowned_server({})
+
+
+def test_slow_servers_hit_the_overall_deadline(home, monkeypatch):
+    import socket
+    import time as clock
+    listener = socket.socket()
+    listener.bind(("127.0.0.1", 0))
+    listener.listen()
+
+    def trickle():
+        conn, _ = listener.accept()
+        conn.recv(4096)
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\n\r\n")
+        try:
+            for _ in range(60):
+                conn.sendall(b" ")
+                clock.sleep(0.1)
+        except OSError:
+            pass
+        conn.close()
+
+    threading.Thread(target=trickle, daemon=True).start()
+    monkeypatch.setattr(jobs, "_get", real_get)
+    monkeypatch.setattr(jobs, "_PROBE_DEADLINE", 1)
+    started = clock.monotonic()
+    with pytest.raises(RuntimeError, match="too slowly"):
+        jobs._get(f"http://127.0.0.1:{listener.getsockname()[1]}/api/health")
+    assert clock.monotonic() - started < 3
+    listener.close()
+
+
+def test_malformed_and_oversized_answers_are_reported_cleanly(home, monkeypatch):
+    import socket
+    monkeypatch.setattr(jobs, "_get", real_get)
+    for response in (b"garbage\r\n\r\n", b"HTTP/1.1 200 OK\r\nContent-Length: 70000\r\n\r\n" + b"x" * 70000):
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen()
+
+        def serve(listener=listener, response=response):
+            conn, _ = listener.accept()
+            conn.recv(4096)
+            conn.sendall(response)
+            conn.close()
+
+        threading.Thread(target=serve, daemon=True).start()
+        with pytest.raises(RuntimeError, match="unreachable|too large"):
+            jobs._get(f"http://127.0.0.1:{listener.getsockname()[1]}/api/health")
+        listener.close()
+
+
+def test_a_failed_install_restores_a_set_aside_client_config(home):
+    private(home / ".config/pi-jobs/client.json", json.dumps({"url": REMOTE, "token": TOKEN}))
+    backup = jobs.apply({"kind": "local", "url": jobs.LOCAL_URL}, {})
+    assert backup and not (home / ".config/pi-jobs/client.json").exists()
+    jobs.restore(backup)
+    assert client(home) == {"url": REMOTE, "token": TOKEN}
+    jobs.restore(backup)  # idempotent: an existing config is never replaced
+    jobs.restore(None)
+    assert client(home)["url"] == REMOTE
+
+
+def test_guided_remote_replaces_an_unreadable_client_config(home, monkeypatch):
+    private(home / ".config/pi-jobs/client.json", "{broken")
+    monkeypatch.setattr(jobs.search_setup.getpass, "getpass", lambda prompt: TOKEN)
+    selection, secrets = collect(pi_jobs=REMOTE, interactive=True, choose=lambda q, c: "hidden")
+    assert selection == {"kind": "remote", "url": REMOTE} and secrets == {"token": TOKEN}

@@ -400,7 +400,9 @@ def setup(args):
             "skip": "Skip (default; no recovery download)",
             "guide": "Show pi-fallback prototype preparation instructions"}) if interactive and not remote else "skip"
 
-    env = dict(os.environ)
+    # pi-jobs' installer recovers its own settings from its LaunchAgent; a calling
+    # shell's PI_JOBS_* must not silently override them.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PI_JOBS_")}
     if previous:
         # A rerun preserves selected paths and policy, not a reset to defaults.
         for key, value in previous.get("settings", {}).items():
@@ -609,15 +611,17 @@ def apply_setup(args, code_root, modules, flags, env, out, gateway=None):
         # an unrelated local gateway's aliases. connect writes this exact path.
         cli_path = Path(state["cli_file"])
         env["PI_SHARED_ALIASES"] = str(cli_path.with_name(cli_path.stem + ".gateway-aliases.json"))
+    jobs_backup = None
     try:
         search_setup.apply(args.search_selection, args.search_secrets, env)
         args.search_secrets.clear()
-        pi_jobs_setup.apply(pi_jobs, pi_jobs_secrets)
+        jobs_backup = pi_jobs_setup.apply(pi_jobs, pi_jobs_secrets)
         pi_jobs_secrets.clear()
         run([ROOT / "install.sh", *flags], env=env)
         search_setup.configure(args.search_selection)
         pi_jobs_setup.configure(pi_jobs)
     except (Exception, KeyboardInterrupt):
+        pi_jobs_setup.restore(jobs_backup)
         # Keep retryable ownership for services the trusted component installers
         # actually created before failure. Never record successful completion.
         after_services = update_support.service_snapshot(modules, state["settings"], args.omlx)
