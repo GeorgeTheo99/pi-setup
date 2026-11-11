@@ -24,6 +24,8 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.44** pins pi-jobs **0.2.3**, which lets you choose an API token's
+value (Settings → API tokens, or `pi-jobs token create <name> --set`).
 Package **0.1.43** pins pi-jobs **0.2.2**: scheduled jobs catch up a run missed
 while the server was down or the Mac asleep, and failed or timed-out runs retry
 (both per job, defaulting to catch-up on and 2 retries). Updates reinstall a local
