@@ -776,6 +776,13 @@ def status(require_omnigent=False, verbose=False):
     if require_omnigent or data.get("omnigent", False):
         command.append("--require-omnigent")
     with report.Session(verbose) as out:
+        node = update_support.node_failure()
+        if node:
+            # Checked first: doctor and every Pi launch fail on a Node that cannot start.
+            report.line("fail", f"Node fails to start: {node}")
+            print("  Repair it with pi-shared update (upgrades the Homebrew Node keg).", flush=True)
+            out.footer()
+            return 1
         run(command, env={**env, **out.env})
         rejected = False
         if data.get("external_gateway"):
@@ -888,7 +895,7 @@ def update(args):
             print("  Preserve direct-only policy and native Pi authentication/model settings; no gateway catalog/profile or oMLX.")
         if data.get("external_gateway"):
             print(f"  Preserve external gateway: {data['external_gateway']['url']}; check configuration offline, then one")
-            print("  authenticated catalog read to warn about a rejected key or stale catalog (no refresh, no inference).")
+            print("  authenticated catalog read that applies added/removed models (no inference).")
         if data.get("omlx") == "install":
             print("  Also update owned Homebrew oMLX; restart it only if its installed version changes.")
         print("  Update owned CLI/runtime; apply changed selected services; refresh dependencies/shortcuts; verify.")
@@ -950,6 +957,9 @@ def update(args):
             os.execve(launcher, [str(launcher), "update", "--modules-only", *(["--verbose"] if verbose else [])], env)
             return 0
         with report.Session(verbose) as out:
+            repaired = update_support.repair_node(lambda command: run(command, quiet=not verbose))
+            if repaired:
+                report.line("ok", f"Node runtime repaired: brew upgrade {repaired} (a shared library had moved ahead of it)")
             env = {k: v for k, v in os.environ.items() if not k.startswith(("PI_SHARED_", "PI_SETUP_", "PI_LAUNCHER_", "MODEL_GATEWAY_", "GATEWAY_VISION_", "LOCAL_SEARCH_", "BROWSER_WORKER_", "WEBSEARCH_", "DECODO_", "MCP_PORT", "MCP_TAILNET_", "PI_JOBS_"))}
             env.update(data["settings"])
             env.update(service_env)
@@ -997,7 +1007,7 @@ def update(args):
                 direct_setup.verify(data["cli_file"], Path(data["code_root"]) / "pi-shared")
             if data.get("external_gateway"):
                 run(existing_gateway.command(data, "check"), env=env)
-                existing_gateway.probe(data, env)
+                existing_gateway.sync(data, env)
             migrate_mcp(data["agent_dir"], dry_run=False)
             data["runtime_versions"] = update_support.runtime_versions()
             data["revisions"] = update_support.revisions(Path(data["code_root"]), data["modules"])
@@ -1054,7 +1064,7 @@ Provider login, gateway onboarding and model downloads are separate steps.
 After setup: pi (use /login and /model); pi models lists configured routes.
 Docs: https://github.com/GeorgeTheo99/pi-setup#readme
 """)
-    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.44")
+    parser.add_argument("--version", action="version", version="pi-shared setup 0.1.45")
     commands = parser.add_subparsers(dest="command", required=True, title="Commands")
     commands.add_parser("peekaboo", help="Standalone opt-in native macOS CLI: plan, status, apply, check")
     commands.add_parser("capability", help="Bounded /setup capability plans, missing-only scaffolds and explicit checks")

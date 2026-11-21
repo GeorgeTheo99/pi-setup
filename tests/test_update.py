@@ -385,3 +385,38 @@ def test_update_prints_migration_warnings(saved, capsys):
 def cli_mcp():
     import mcp_setup
     return mcp_setup
+
+
+def test_repair_node_upgrades_the_owning_homebrew_keg(monkeypatch, tmp_path):
+    from update_support import repair_node
+    import update_support
+    cellar = tmp_path / "Cellar/node@24/24.22.2/bin"
+    cellar.mkdir(parents=True)
+    (cellar / "node").touch()
+    monkeypatch.setattr(update_support.shutil, "which", lambda name: str(cellar / "node"))
+    commands, failures = [], ["dyld: Library not loaded: libsimdjson.36.dylib"]
+    monkeypatch.setattr(update_support, "node_failure", lambda: failures.pop(0) if failures else None)
+    assert repair_node(commands.append) == "node@24"
+    assert commands == [["brew", "upgrade", "node@24"]]
+    assert repair_node(commands.append) is None and len(commands) == 1  # healthy: no brew call
+
+    failures[:] = ["dyld: missing", "dyld: missing"]
+    with pytest.raises(RuntimeError, match="still fails to start.*build-from-source node@24"):
+        repair_node(commands.append)
+    failures[:] = ["node: bad option: --bogus"]
+    with pytest.raises(RuntimeError, match="bad option"):
+        repair_node(commands.append)
+    assert len(commands) == 2  # only library-load failures trigger an upgrade
+    failures[:] = ["dyld: missing"]
+    monkeypatch.setattr(update_support.shutil, "which", lambda name: "/usr/local/bin/node")
+    with pytest.raises(RuntimeError, match="not Homebrew-managed"):
+        repair_node(commands.append)
+
+
+def test_node_failure_reports_the_loader_error(monkeypatch):
+    import update_support
+    monkeypatch.setattr(update_support.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(
+        a[0], 134, "", "\ndyld[1]: Library not loaded: /opt/homebrew/opt/simdjson/lib/libsimdjson.36.dylib\n  Referenced from: node\n"))
+    assert update_support.node_failure().startswith("dyld[1]: Library not loaded")
+    monkeypatch.setattr(update_support.subprocess, "run", lambda *a, **kw: subprocess.CompletedProcess(a[0], 0, "", ""))
+    assert update_support.node_failure() is None

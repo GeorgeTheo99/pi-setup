@@ -338,8 +338,10 @@ saved connection and explicitly refreshes discovery; omitted optional module
 selections are preserved. Setup refuses to silently discard an external connection
 or mix it with a previously selected local gateway/oMLX.
 
-`pi-shared update` preserves the connection and checks it **offline only**;
-`pi-shared status` also checks local configuration, not remote readiness.
+`pi-shared update` preserves the connection and applies the gateway's current
+catalog (new models appear without rerunning setup); `pi` launches also refresh it
+in the background at most every 15 minutes. `pi-shared status` checks local
+configuration and makes one read-only catalog request; neither tests inference.
 
 ### Optional Omnigent compatibility
 

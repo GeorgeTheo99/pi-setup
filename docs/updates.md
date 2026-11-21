@@ -24,6 +24,10 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.45** applies a remote gateway's current catalog during `update`
+(new gateway models appear without rerunning setup; with pi-shared, `pi` also
+refreshes it in the background) and repairs a Homebrew Node that a shared-library
+upgrade left unable to start.
 Package **0.1.44** pins pi-jobs **0.2.3**, which lets you choose an API token's
 value (Settings → API tokens, or `pi-jobs token create <name> --set`).
 Package **0.1.43** pins pi-jobs **0.2.2**: scheduled jobs catch up a run missed
@@ -156,17 +160,25 @@ receipts, require manual reconciliation rather than automatic migration/removal.
 normalized endpoint, absolute key-file reference and explicit private-HTTP
 opt-in. This optional schema-2 field is backward-compatible; key contents are
 never copied into receipts. Update preserves that connection and its managed
-outputs and invokes shared `pi-gateway check` offline, then `pi-gateway probe`:
-one authenticated `GET /v1/models/canonical` that warns when the gateway rejects
-the client key (for example after the operator rotates or retires it), is
-unreachable, or lists models that differ from the local catalog. The probe is
-advisory: it never writes the catalog, provisions credentials, claims remote
-service ownership, restarts remote services, tests inference or fails the update.
-To explicitly refresh authenticated discovery, rerun `pi-shared setup --mode existing-gateway --yes`
-(repeat optional module selections) or the printed `pi-gateway connect` command;
-omitted connection arguments and saved custom paths are retained. `status` runs
-the same check and probe and exits nonzero on a rejected key. Connection/check
+outputs and invokes shared `pi-gateway check` offline, then `pi-gateway sync`:
+one authenticated `GET /v1/models/canonical` that applies added/removed models to
+the generated catalog (writing only when it changed) and warns when the gateway
+rejects the client key (for example after the operator rotates or retires it) or
+is unreachable. A failed sync keeps the saved catalog and never fails the update;
+it never provisions credentials, claims remote service ownership, restarts remote
+services or tests inference. Between updates, each `pi` launch refreshes the
+catalog in the background at most every 15 minutes (pi-shared's
+`pi-gateway auto-sync`; `PI_GATEWAY_AUTO_SYNC=0` disables it). To change the
+endpoint or key file, rerun `pi-shared setup --mode existing-gateway --yes`
+(repeat optional module selections); omitted connection arguments and saved
+custom paths are retained. `status` runs the check and a read-only
+`pi-gateway probe`, and exits nonzero on a rejected key. Connection/check
 failures cannot produce a completed receipt.
+
+Before module updates, `update` checks that the Homebrew `node` starts. When a
+Homebrew upgrade moved a shared library (such as simdjson) ahead of the Node keg
+built against it, it runs `brew upgrade` on that keg once (only for library-load failures) and stops with
+instructions if Node still cannot start. `status` reports such a Node first.
 
 Receipts from 0.1.2 and earlier lack some of this information. They remain readable
 by `status`, but `update` refuses to guess their missing settings. Run setup once

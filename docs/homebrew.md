@@ -269,11 +269,12 @@ A failed connection leaves the receipt incomplete. Rerun setup in
 endpoint/key-file/HTTP choices and custom paths are retained when omitted.
 Optional module flags still follow normal setup selection rules. Use
 `pi-shared update` for routine maintenance: it retains the connection, runs
-`pi-gateway check` offline, then `pi-gateway probe`: one authenticated catalog
-read that warns about a rejected (rotated/retired) key, an unreachable gateway
-or a stale local catalog without changing anything. Status runs the same check
-and probe and exits nonzero when the gateway rejects the key; neither tests
-inference.
+`pi-gateway check` offline, then `pi-gateway sync`: one authenticated catalog
+read that applies added/removed models and warns about a rejected (rotated/retired)
+key or an unreachable gateway, keeping the saved catalog on failure. `pi` launches
+also refresh the catalog in the background at most every 15 minutes. Status runs
+the check and a read-only `pi-gateway probe` and exits nonzero when the gateway
+rejects the key; neither tests inference.
 
 ## Unified `pi` CLI before model configuration
 

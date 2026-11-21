@@ -89,27 +89,40 @@ def command(data, action):
             *(["--allow-private-http"] if gateway["allow_private_http"] else [])]
 
 
-def probe(data, env):
-    """One authenticated catalog read (no writes, no inference); reports, never raises."""
+def gateway_command(data, action, env):
+    """Run one pi-gateway catalog operation and report it; never raises."""
     try:
-        result = subprocess.run([str(a) for a in command(data, "probe")], env=env, capture_output=True,
+        result = subprocess.run([str(a) for a in command(data, action)], env=env, capture_output=True,
                                 text=True, errors="replace", timeout=40, check=False)
     except (OSError, subprocess.TimeoutExpired):
-        report.line("warn", "Remote gateway probe did not run; authentication NOT verified.")
+        report.line("warn", f"Remote gateway {action} did not run; authentication NOT verified.")
         return None
     detail = " ".join((result.stdout + result.stderr).split())
-    connect = shlex.join(str(a) for a in command(data, "connect"))
+    drift = "\n".join(row for row in result.stdout.splitlines() if row.startswith("  "))
+    sync = shlex.join(str(a) for a in command(data, "sync"))
     if result.returncode == PROBE_OK:
-        report.line("ok", detail)
+        report.line("ok", " ".join(row.strip() for row in result.stdout.splitlines() if not row.startswith("  ")))
+        if drift:
+            print(drift, flush=True)
     elif result.returncode == PROBE_AUTH_REJECTED:
         report.line("fail", "Remote gateway REJECTED this Mac's client key; every gateway model will fail with 401.")
         print(f"  Write a new consumer key from the gateway operator into {data['external_gateway']['key_file']}"
-              f" (mode 0600), then run:\n    {connect}", flush=True)
+              f" (mode 0600), then run:\n    {sync}", flush=True)
     elif result.returncode == PROBE_UNREACHABLE:
         report.line("warn", "Remote gateway unreachable (offline or Tailscale down?); authentication NOT verified.")
     elif result.returncode == PROBE_DRIFT:
-        report.line("warn", "Remote gateway catalog changed since the last connect; refresh with:")
-        print(f"    {connect}\n" + "\n".join(row for row in result.stdout.splitlines() if row.startswith("  ")), flush=True)
+        report.line("warn", "Remote gateway catalog changed since the last refresh; launching pi refreshes it, or run:")
+        print(f"    {sync}\n" + drift, flush=True)
     else:
-        report.line("warn", f"Remote gateway probe failed; authentication NOT verified. {detail}")
+        report.line("warn", f"Remote gateway {action} failed; authentication NOT verified. {detail}")
     return result.returncode
+
+
+def probe(data, env):
+    """One authenticated catalog read (no writes, no inference)."""
+    return gateway_command(data, "probe", env)
+
+
+def sync(data, env):
+    """One authenticated catalog read that applies a changed catalog (no inference)."""
+    return gateway_command(data, "sync", env)

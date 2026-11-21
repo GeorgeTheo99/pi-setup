@@ -238,12 +238,26 @@ def test_status_and_update_probe_outcomes(gateway, monkeypatch, capsys, code, st
     output = capsys.readouterr().out
     assert expected in output
     if code in (3, 4):
-        assert "pi-gateway connect --url https://gateway.example --key-file" in output
+        assert "pi-gateway sync --url https://gateway.example --key-file" in output
     assert key.read_text().strip() not in output
     cli.update(update_args())  # warnings never fail an update
     assert cli.read_state()["status"] == "module-checks-passed"
-    assert [p[1] for p in probes] == ["probe", "probe"]
+    assert [p[1] for p in probes] == ["probe", "sync"]  # update applies the catalog
     assert all("connect" not in cmd for cmd, _ in calls)
+
+
+def test_update_sync_reports_applied_drift(gateway, monkeypatch, capsys):
+    _, calls, key = gateway
+    cli.setup(remote(key)); calls.clear()
+    stdout = "  1 new on gateway: org/new\nRemote gateway catalog refreshed: 3 available models. Inference not tested.\n"
+    monkeypatch.setattr(cli.existing_gateway.subprocess, "run",
+                        lambda args, **kw: subprocess.CompletedProcess(args, 0, stdout, ""))
+    capsys.readouterr()
+    cli.update(update_args())
+    output = capsys.readouterr().out
+    assert "Remote gateway catalog refreshed: 3 available models" in output
+    assert "1 new on gateway: org/new" in output
+    assert cli.read_state()["status"] == "module-checks-passed"
 
 
 def test_failed_offline_update_check_stays_incomplete(gateway, monkeypatch):
@@ -338,7 +352,7 @@ def test_subprocess_setup_rerun_update_status_with_offline_workflow_stubs(tmp_pa
            "data = json.loads(p.read_text())  # bootstrap must precede connect\n"
            "expected = {'url': flags['--url'], 'key_file': flags['--key-file']}\n"
            "if action == 'connect': p.write_text(json.dumps(expected))\n"
-           "elif action in ('check', 'probe'): assert data == expected\n"
+           "elif action in ('check', 'probe', 'sync'): assert data == expected\n"
            "else: raise AssertionError('unexpected gateway operation')\n")
 
     def invoke(*args):
@@ -362,6 +376,18 @@ def test_subprocess_setup_rerun_update_status_with_offline_workflow_stubs(tmp_pa
     assert receipt["cli_file"] == str(config) and receipt["services"] == {}
     commands = [json.loads(line) for line in log.read_text().splitlines()]
     gateway_actions = [c[1] for c in commands if Path(c[0]).name == "pi-gateway"]
-    assert gateway_actions == ["connect", "connect", "check", "probe", "check", "probe"]
+    assert gateway_actions == ["connect", "connect", "check", "sync", "check", "probe"]
     assert "model-gateway" not in receipt["modules"]
     assert key.read_text().strip() not in log.read_text()
+
+
+def test_status_fails_first_when_node_cannot_start(gateway, monkeypatch, capsys):
+    _, calls, key = gateway
+    cli.setup(remote(key)); calls.clear()
+    monkeypatch.setattr(cli.update_support, "node_failure", lambda: "dyld[1]: Library not loaded: libsimdjson.36.dylib")
+    capsys.readouterr()
+    assert cli.status() == 1
+    output = capsys.readouterr().out
+    assert "Node fails to start: dyld[1]: Library not loaded" in output
+    assert "pi-shared update" in output
+    assert calls == []  # doctor and gateway checks would only fail obscurely

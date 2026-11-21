@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import plistlib
 import re
+import shutil
 import stat
 import subprocess
 
@@ -237,6 +238,42 @@ def omlx_version():
     # The active opt link, not every retained keg reported by brew list.
     prefix = subprocess.check_output(["brew", "--prefix", "jundot/omlx/omlx"], text=True, timeout=15).strip()
     return Path(prefix).resolve(strict=True).name
+
+
+def node_failure():
+    """None when `node` starts, else its first error line (such as a dyld library mismatch)."""
+    try:
+        result = subprocess.run(["node", "-e", ""], capture_output=True, text=True, errors="replace", timeout=30)
+    except FileNotFoundError:
+        return "node is not on PATH"
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return type(exc).__name__
+    if result.returncode == 0:
+        return None
+    return next((line.strip() for line in result.stderr.splitlines() if line.strip()),
+                f"exit status {result.returncode}")[:300]
+
+
+def repair_node(run):
+    """Homebrew can upgrade a shared library (simdjson, icu4c, ...) before the Node
+    keg rebuilt against it, leaving node unable to start. Upgrade that keg once."""
+    failure = node_failure()
+    if failure is None:
+        return None
+    if not any(sign in failure for sign in ("dyld", "Library not loaded", "Symbol not found")):
+        # A timeout or bad NODE_OPTIONS is not fixed by moving Node to a newer release.
+        raise RuntimeError(f"Node fails to start ({failure}); fix that, then retry the update")
+    path = shutil.which("node")
+    parts = Path(path).resolve().parts if path else ()
+    if "Cellar" not in parts[:-3]:
+        raise RuntimeError(f"Node fails to start ({failure}) and is not Homebrew-managed; reinstall it, then retry")
+    formula = parts[parts.index("Cellar") + 1]
+    run(["brew", "upgrade", formula])
+    if node_failure() is not None:
+        raise RuntimeError(f"Node ({formula}) still fails to start after brew upgrade {formula}: {failure}. "
+                           f"A rebuilt bottle may not be published yet: retry later, or run "
+                           f"brew reinstall --build-from-source {formula}")
+    return formula
 
 
 def runtime_versions():
