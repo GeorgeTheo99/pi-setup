@@ -24,6 +24,10 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.48** pins pi-jobs **0.3.2**: a run waiting for approval says
+what approving starts (agent, repository, base branch) and shows the webhook or
+watch item it is for and the job's instructions; run lists name such runs by
+their item.
 Package **0.1.47** pins pi-jobs **0.3.1**: a token you choose can be any
 password (1 to 200 printable characters, `password` included), and the UI's
 sign-in accepts it.
