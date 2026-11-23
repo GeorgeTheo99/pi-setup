@@ -24,6 +24,10 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.46** pins pi-jobs **0.3.0**: a job's watch command runs on its
+schedule instead of the agent and starts one run per new JSON item it prints, and
+**Approve before running** holds runs from the schedule, webhook or watch until
+approved (in the UI or with pi-shared's `jobs_approve`).
 Package **0.1.45** applies a remote gateway's current catalog during `update`
 (new gateway models appear without rerunning setup; with pi-shared, `pi` also
 refreshes it in the background) and repairs a Homebrew Node that a shared-library
