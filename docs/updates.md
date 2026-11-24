@@ -24,6 +24,10 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.54** pins pi-jobs **0.8.0**: **Approve & release** has a job's agent release a
+finished item by its release instructions (merge, push, deploy, publish), like merging an
+approved pull request, or **Release automatically**; Settings adds agents by name, such as a Pi
+launcher with its own model (`pi-claude -p {prompt}`), for jobs, chats and the default.
 Package **0.1.53** pins pi-jobs **0.7.0**: **Chat** manages jobs by asking, from any
 browser; the agent reads and proposes, and each change is a card you apply (jobs, runs,
 Ship, Settings, tokens), with token values shown to you only.
