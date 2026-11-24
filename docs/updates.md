@@ -24,6 +24,9 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.52** pins pi-jobs **0.6.0**: a job can have a **Ship command** (your
+repository's own merge, release or deploy script) that runs on a finished item's result
+only when you press **Ship** (or `jobs_ship`); a failed ship goes back to the agent.
 Package **0.1.51** pins pi-jobs **0.5.0**: a run page is its item's conversation,
 with **Ask** (an answer, no changes kept) and **Make changes** (commits on the item's
 branch); with Pi, an item's runs continue one session, so the agent remembers it.
