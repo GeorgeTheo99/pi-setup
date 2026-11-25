@@ -273,8 +273,14 @@ Anthropic shortcut is enabled before launching it. Run `/login anthropic` in Pi
 and select Claude Pro/Max OAuth, or configure an Anthropic API key. **Unlike
 Codex, Claude OAuth third-party usage is billed as extra usage per token**, not
 against plan limits. `PI_SHARED_DIRECT_LAUNCHERS=0` disables both shortcuts;
-`pi-anthropic` fails closed in that case. Authentication/inference are not
-verified by setup or status.
+Disabled direct shortcuts report a launch error rather than sending a literal
+prompt. Use `pi -- openai` when you intend a literal prompt. Authentication and
+inference are not verified by setup or status.
+
+For Claude Code, the Homebrew package also supports `pi claude` with a
+separate opt-in bridge profile. See `pi claude --help` and the
+[Homebrew bridge guide](https://github.com/GeorgeTheo99/homebrew-tap#optional-claude-code-bridge).
+The older `pi-claude` executable remains available.
 
 The schema-2 receipt saves `PI_SHARED_DIRECT_ONLY=1`; reruns retain custom paths,
 and update/status verify direct-only launcher metadata offline. A nonempty
