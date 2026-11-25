@@ -112,6 +112,16 @@ def test_claude_uses_packaged_sibling_and_preserves_status_and_arguments(env):
     assert r.returncode == 0 and "pi claude --help" in r.stdout
 
 
+def test_claude_cannot_bypass_saved_aliases_if_shared_launcher_is_missing(env):
+    _exe(env["upstream"].with_name("pi-claude"), "echo BRIDGE")
+    config = env["home"] / ".pi/launcher.json"
+    config.parent.mkdir()
+    config.write_text("{}")
+    result = run(env, "claude", "prompt")
+    assert result.returncode == 1 and "cannot check configured model aliases" in result.stderr
+    assert not result.stdout
+
+
 @pytest.mark.parametrize("alias", ["claude", "openai", "anthropic"])
 def test_packaged_shortcuts_check_existing_routes_on_old_modules(env, alias):
     root = shared_checkout(env)

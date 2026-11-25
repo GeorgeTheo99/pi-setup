@@ -129,6 +129,9 @@ def main():
                 raise ValueError("pi claude is unavailable in this installation; install or upgrade Homebrew pi-shared")
         os.execv(str(launcher), [str(launcher), *argv])
     if shortcut == "claude":
+        config = Path(os.environ.get("PI_LAUNCHER_CONFIG", "~/.pi/launcher.json")).expanduser()
+        if config.exists() or config.is_symlink():
+            raise ValueError("cannot check configured model aliases; run pi-shared update or use pi-claude for the bridge")
         if has_claude:
             os.execv(str(claude), [str(claude), *argv[1:]])
         raise ValueError("pi claude is unavailable in this installation; install or upgrade Homebrew pi-shared")
