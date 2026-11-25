@@ -93,6 +93,25 @@ def test_launcher_flags_before_setup_are_a_clear_actionable_error(env, command):
     assert "UPSTREAM" not in r.stdout
 
 
+@pytest.mark.parametrize("command", ["openai", "anthropic", "claude"])
+def test_unavailable_shortcut_is_not_a_prompt(env, command):
+    r = run(env, command, "do not send this")
+    assert r.returncode == 1 and "unavailable" in r.stderr
+    assert not r.stdout
+    assert run(env, "--", command).stdout.strip() == f"UPSTREAM argv=[-- {command}]"
+
+
+def test_claude_uses_packaged_sibling_and_preserves_status_and_arguments(env):
+    # An invalid setup receipt must not break the independent Claude profile.
+    write_receipt(env, {})
+    _exe(env["upstream"].with_name("pi-claude"),
+         'printf "CLAUDE: %s (%s)\\n" "$1" "$2"; exit 23')
+    r = run(env, "claude", "--model", "a model", PATH="/nonexistent")
+    assert r.returncode == 23 and r.stdout.strip() == "CLAUDE: --model (a model)"
+    r = run(env, "--help")
+    assert r.returncode == 0 and "pi claude --help" in r.stdout
+
+
 # --- Managed bare update; explicit stock options retain their meaning -------
 
 @pytest.mark.parametrize("receipt", ["absent", "configured", "incomplete", "malformed"])

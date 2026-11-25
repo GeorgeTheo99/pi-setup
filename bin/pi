@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import sys
 
 
@@ -39,6 +40,18 @@ def main():
     upstream = absolute(os.environ.get("PI_UPSTREAM_BIN"))
     if not upstream.is_file() or not os.access(upstream, os.X_OK) or upstream.resolve() == Path(__file__).resolve():
         raise ValueError("PI_UPSTREAM_BIN must identify the executable stock Pi runtime")
+    claude = upstream.with_name("pi-claude")
+    has_claude = claude.is_file() and os.access(claude, os.X_OK)
+    if argv[:1] == ["claude"]:
+        if not has_claude:
+            raise ValueError("pi claude is unavailable in this installation; install or upgrade Homebrew pi-shared")
+        os.execv(str(claude), [str(claude), *argv[1:]])
+    if has_claude and argv in (["--help"], ["-h"]):
+        result = subprocess.run([str(upstream), *argv])
+        if result.returncode:
+            sys.exit(result.returncode if result.returncode > 0 else 128 - result.returncode)
+        print("\nHomebrew shortcut: pi claude --help (optional Claude Code bridge).")
+        return
     receipt = Path.home() / ".config/pi-shared/setup.json"
     shared = None
     if receipt.exists() or receipt.is_symlink():
@@ -95,6 +108,9 @@ def main():
         os.execv(str(launcher), [str(launcher), *argv])
     if argv[:1] == ["models"] or (argv and argv[0].startswith("--launcher-")):
         raise ValueError("launcher support is not installed; run pi-shared setup (or pi-shared update for an existing installation)")
+    if argv and argv[0] in ("openai", "anthropic"):
+        raise ValueError(f"pi {argv[0]} is unavailable; run pi-shared setup to enable direct shortcuts. "
+                         f"For a literal prompt, use pi -- {argv[0]}")
     os.execv(str(upstream), [str(upstream), *argv])
 
 
