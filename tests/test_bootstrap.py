@@ -102,14 +102,39 @@ def test_unavailable_shortcut_is_not_a_prompt(env, command):
 
 
 def test_claude_uses_packaged_sibling_and_preserves_status_and_arguments(env):
-    # An invalid setup receipt must not break the independent Claude profile.
-    write_receipt(env, {})
     _exe(env["upstream"].with_name("pi-claude"),
          'printf "CLAUDE: %s (%s)\\n" "$1" "$2"; exit 23')
     r = run(env, "claude", "--model", "a model", PATH="/nonexistent")
     assert r.returncode == 23 and r.stdout.strip() == "CLAUDE: --model (a model)"
+    write_receipt(env, {})  # Help must remain available even with a broken receipt.
+    assert run(env, "claude", "--help").returncode == 23
     r = run(env, "--help")
     assert r.returncode == 0 and "pi claude --help" in r.stdout
+
+
+@pytest.mark.parametrize("alias", ["claude", "openai", "anthropic"])
+def test_packaged_shortcuts_check_existing_routes_on_old_modules(env, alias):
+    root = shared_checkout(env)
+    config = env["home"] / ".pi/launcher.json"
+    config.parent.mkdir()
+    config.write_text("{}")
+    write_receipt(env, {"version": 1, "status": "module-checks-passed", "modules": ["pi-shared"],
+                        "code_root": str(root), "cli_file": str(config)})
+    _exe(env["upstream"].with_name("pi-claude"), 'printf "BRIDGE\\n"')
+    launcher = root / "pi-shared/bin/pi-launch"
+    _exe(launcher, f'if [ "$1" = --launcher-list ]; then printf "{alias}\\tprovider/model\\n"; '
+         'else printf "LAUNCH\\n"; fi')
+    result = run(env, alias, "prompt")
+    if alias == "claude":
+        assert result.returncode == 1 and "conflicts" in result.stderr and not result.stdout
+    else:
+        assert result.returncode == 0 and result.stdout.strip() == "LAUNCH"
+    _exe(launcher, 'if [ "$1" != --launcher-list ]; then printf "LAUNCH\\n"; fi')
+    result = run(env, alias, "prompt")
+    if alias == "claude":
+        assert result.returncode == 0 and result.stdout.strip() == "BRIDGE"
+    else:
+        assert result.returncode == 1 and "unavailable" in result.stderr and not result.stdout
 
 
 # --- Managed bare update; explicit stock options retain their meaning -------
@@ -373,6 +398,9 @@ def test_incomplete_receipt_status_still_delegates(env):
 def test_direct_uses_saved_native_profile_without_overriding_explicit_profile(env, mode, explicit):
     code_root = shared_checkout(env)
     _exe(code_root / "pi-shared/bin/pi-launch", 'printf "%s" "$PI_CODING_AGENT_DIR"')
+    capabilities = code_root / "pi-shared/lib/pi-launcher-capabilities.json"
+    capabilities.parent.mkdir()
+    capabilities.write_text('{"directShortcutErrors": 1}')
     profile = env["home"] / "custom-native-profile"
     write_receipt(env, {"version": 2, "status": "module-checks-passed", "mode": mode,
                        "modules": ["pi-shared"], "code_root": str(code_root),
