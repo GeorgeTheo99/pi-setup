@@ -24,6 +24,10 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.56** pins pi-jobs **0.10.0**: promotion, an opt-in release in two stages. A job
+with promote instructions releases to staging only; the item waits as Staged until **Approve &
+promote** ships exactly the staged commit to production, checked against git and an optional promote
+verify command. Verify commands get the released commit in `PI_JOBS_RELEASE_COMMIT`.
 Package **0.1.55** pins pi-jobs **0.9.1**: releases are checked against git and an optional
 verify command, automatic releases need a passing check and a `Verdict:` line, Approve & release
 shows what goes out and is pinned to that commit, a notify command for what needs you, an Inbox
