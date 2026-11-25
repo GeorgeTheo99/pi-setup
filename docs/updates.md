@@ -24,6 +24,9 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.57** adds `pi claude` as the Homebrew Claude Code bridge command.
+`pi-claude` remains available for scripts. Unavailable direct shortcuts and bridge
+startup failures report an actionable terminal error. The pinned Pi runtime is unchanged.
 Package **0.1.56** pins pi-jobs **0.10.0**: promotion, an opt-in release in two stages. A job
 with promote instructions releases to staging only; the item waits as Staged until **Approve &
 promote** ships exactly the staged commit to production, checked against git and an optional promote
