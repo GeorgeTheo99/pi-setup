@@ -55,7 +55,7 @@ def test_packaged_command_checks_native_route_and_forwards_arguments(machine, en
     launcher.chmod(0o755)
     capabilities = shared.parent / "lib/pi-launcher-capabilities.json"
     capabilities.parent.mkdir()
-    capabilities.write_text('{"modelsCommand":1}')
+    capabilities.write_text('{"modelsCommand":1,"directShortcutErrors":1}')
     receipt = home / ".config/pi-shared/setup.json"
     receipt.parent.mkdir(parents=True)
     receipt.write_text(json.dumps({"version": 2, "status": "module-checks-passed",

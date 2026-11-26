@@ -7,6 +7,24 @@ import stat
 import subprocess
 import sys
 
+FORMULA = "georgetheo99/tap/pi-shared"
+PACKAGE = Path(__file__).resolve().parents[1]  # Homebrew libexec, marked by homebrew.json
+HOMEBREW = (PACKAGE / "homebrew.json").is_file()
+
+
+def packaged_claude(upstream):
+    """The bridge launcher beside the stock runtime, else this Homebrew package's own
+    (a machine-local PI_UPSTREAM_BIN may select a runtime outside the package)."""
+    candidates = [upstream.with_name("pi-claude")]
+    if HOMEBREW:
+        candidates.append(PACKAGE.parent / "bin/pi-claude")
+    return next((path for path in candidates if path.is_file() and os.access(path, os.X_OK)), None)
+
+
+def claude_unavailable():
+    command = "brew update && brew upgrade" if HOMEBREW else "brew install"
+    return ValueError(f"pi claude is unavailable in this installation. Run: {command} {FORMULA}")
+
 
 def private_json(path, *, private=True):
     for parent in (path.parent, path.parent.parent):
@@ -40,8 +58,8 @@ def main():
     upstream = absolute(os.environ.get("PI_UPSTREAM_BIN"))
     if not upstream.is_file() or not os.access(upstream, os.X_OK) or upstream.resolve() == Path(__file__).resolve():
         raise ValueError("PI_UPSTREAM_BIN must identify the executable stock Pi runtime")
-    claude = upstream.with_name("pi-claude")
-    has_claude = claude.is_file() and os.access(claude, os.X_OK)
+    claude = packaged_claude(upstream)
+    has_claude = claude is not None
     shortcut = argv[0] if argv else ""
     # Help and version cannot send a prompt and should work even with a broken receipt.
     if shortcut == "claude" and has_claude and argv[1:] in (["--help"], ["-h"], ["--version"], ["-v"]):
@@ -126,7 +144,7 @@ def main():
                 raise ValueError(f"pi {shortcut} is unavailable; check pi models --direct or run pi-shared setup. "
                                  f"For a literal prompt, use pi -- {shortcut}")
             if shortcut == "claude" and shortcut not in aliases:
-                raise ValueError("pi claude is unavailable in this installation; install or upgrade Homebrew pi-shared")
+                raise claude_unavailable()
         os.execv(str(launcher), [str(launcher), *argv])
     if shortcut == "claude":
         config = Path(os.environ.get("PI_LAUNCHER_CONFIG", "~/.pi/launcher.json")).expanduser()
@@ -134,7 +152,7 @@ def main():
             raise ValueError("cannot check configured model aliases; run pi-shared update or use pi-claude for the bridge")
         if has_claude:
             os.execv(str(claude), [str(claude), *argv[1:]])
-        raise ValueError("pi claude is unavailable in this installation; install or upgrade Homebrew pi-shared")
+        raise claude_unavailable()
     if argv[:1] == ["models"] or (argv and argv[0].startswith("--launcher-")):
         raise ValueError("launcher support is not installed; run pi-shared setup (or pi-shared update for an existing installation)")
     if argv and argv[0] in ("openai", "anthropic"):
