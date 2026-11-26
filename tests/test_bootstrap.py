@@ -112,6 +112,28 @@ def test_claude_uses_packaged_sibling_and_preserves_status_and_arguments(env):
     assert r.returncode == 0 and "pi claude --help" in r.stdout
 
 
+@pytest.mark.parametrize("homebrew, command", [
+    (True, "brew update && brew upgrade georgetheo99/tap/pi-shared"),
+    (False, "brew install georgetheo99/tap/pi-shared"),
+])
+def test_missing_claude_names_the_exact_command(env, homebrew, command):
+    if homebrew:
+        (env["bootstrap"].parents[1] / "homebrew.json").write_text("{}")
+    r = run(env, "claude", "prompt")
+    assert r.returncode == 1 and not r.stdout
+    assert r.stderr.strip().endswith(f"Run: {command}")
+
+
+def test_claude_falls_back_to_the_homebrew_package_for_a_local_runtime(env):
+    # A machine-local PI_UPSTREAM_BIN outside the package must not hide the bridge.
+    (env["bootstrap"].parents[1] / "homebrew.json").write_text("{}")
+    _exe(env["bootstrap"].parents[2] / "bin/pi-claude", 'printf "PACKAGED %s\\n" "$*"')
+    r = run(env, "claude", "prompt")
+    assert r.returncode == 0 and r.stdout.strip() == "PACKAGED prompt"
+    _exe(env["upstream"].with_name("pi-claude"), 'printf "SIBLING\\n"')
+    assert run(env, "claude").stdout.strip() == "SIBLING"
+
+
 def test_claude_cannot_bypass_saved_aliases_if_shared_launcher_is_missing(env):
     _exe(env["upstream"].with_name("pi-claude"), "echo BRIDGE")
     config = env["home"] / ".pi/launcher.json"

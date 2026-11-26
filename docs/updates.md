@@ -24,6 +24,9 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.58** finds the packaged `pi claude` bridge when a machine-local `PI_UPSTREAM_BIN`
+selects another Pi runtime, and a missing bridge names the exact command to run:
+`brew update && brew upgrade georgetheo99/tap/pi-shared`.
 Package **0.1.57** adds `pi claude` as the Homebrew Claude Code bridge command.
 `pi-claude` remains available for scripts. Unavailable direct shortcuts and bridge
 startup failures report an actionable terminal error. The pinned Pi runtime is unchanged.
