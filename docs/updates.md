@@ -24,6 +24,9 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.59** pins pi-jobs **0.10.1**: a job's items run side by side (Settings allows up
+to 10 runs at once; each item still runs one message at a time), and an item's composer has one
+**Send** button: the agent decides whether a message asks a question or asks for changes.
 Package **0.1.58** finds the packaged `pi claude` bridge when a machine-local `PI_UPSTREAM_BIN`
 selects another Pi runtime, and a missing bridge names the exact command to run:
 `brew update && brew upgrade georgetheo99/tap/pi-shared`.
