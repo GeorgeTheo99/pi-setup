@@ -67,7 +67,7 @@ modules:
 
   pi-jobs:
     repo: https://github.com/GeorgeTheo99/pi-jobs.git
-    ref: v0.10.1
+    ref: v0.11.0
     tier: optional
     description: >-
       Scheduled, webhook-triggered and on-demand coding-agent jobs (Pi, Claude

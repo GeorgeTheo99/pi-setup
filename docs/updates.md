@@ -24,6 +24,11 @@ Use `pi-shared update --plan` or `--modules-only` for managed update options.
 
 Homebrew owns the pinned runtime; never use global npm to mutate it. Updates
 install the latest published package, not necessarily the latest npm Pi version.
+Package **0.1.60** pins pi-jobs **0.11.0**: every model alias Pi's launcher lists (`pi models`,
+plus the Claude bridge `pi claude`) is an agent, `pi:<alias>`, picked under Pi for a job, a chat or
+the default and read live from the server; a run whose alias is gone fails instead of sending the
+alias as its prompt. Automatic releases need a verify command, and a release report's "Still to
+ship" lines leave an item Partly released.
 Package **0.1.59** pins pi-jobs **0.10.1**: a job's items run side by side (Settings allows up
 to 10 runs at once; each item still runs one message at a time), and an item's composer has one
 **Send** button: the agent decides whether a message asks a question or asks for changes.
